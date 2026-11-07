@@ -4,6 +4,7 @@ import sys
 import questionary
 from questionary import Choice, Style
 
+import mods_index as M
 import srv_config as C
 
 CATPPUCCIN_STYLE = Style([
@@ -30,31 +31,36 @@ STRINGS = {
         "loader": "🧩 Загрузчик модов",
         "java_ver": "☕ Требуемая версия Java",
         "auto_join": "🚀 Автовход на Minecraft-сервер",
-        "mc_addr": "🌍 Адрес Minecraft-сервера (IP:порт)",
-        "del_user_mods": "🧹 Удалять сторонние моды игроков",
+        "mc_addr": "🌍 Адрес Minecraft-сервера (IP / домен)",
+        "del_user_mods": "🧹 Сторонние моды игроков",
         "hide_mods": "🕵  Скрытие названий модов",
+        "bg_opt": "🖼  Фон лаунчера для игроков",
         "ports_rl": "🔌 Порты и Rate-Limit",
         "exit": "✅ Готово — выйти",
         "yes": "Да",
         "no": "Нет",
-        "default_mc": "по умолчанию (.minecraft)",
+        "default_mc": "по настройкам игрока",
         "saved": "✔ Сохранено в config.txt!",
         "q_lang": "Выбери язык / Choose language:",
         "q_name": "Название твоего сервера (увидят игроки в лаунчере):",
-        "q_folder": "Имя папки сборки у клиентов (пусто = стандартный .minecraft, только a-z, 0-9, _, -, .):",
+        "q_folder": "Имя отдельной папки сборки у клиентов (пусто = по режиму игрока; только a-z, 0-9, _, -, .):",
         "err_folder": "Используй только латинские буквы, цифры, '_', '-' или '.' (либо оставь пустым)!",
-        "q_mc_ver": "Версия Minecraft (например 1.20.1, 1.21.1, 1.19.2):",
+        "q_mc_ver": "Версия Minecraft (например 1.20.1, 1.21.1, 1.16.5):",
         "q_loader": "Выбери загрузчик модов:",
         "q_java": "Какую версию Java требовать у клиентов?",
         "java_auto": "Авто (определится по версии Minecraft)",
         "java_custom": "Ввести свою мажорную версию…",
         "q_java_num": "Мажорная версия Java (число от 8 до 40):",
         "q_auto_join": "Автоматически подключать игроков к Minecraft-серверу при входе в игру?",
-        "q_mc_ip": "IP Minecraft-сервера (например твой IP в Radmin VPN 26.x.x.x):",
+        "q_mc_addr_mode": "Как игрокам подключаться к самому Minecraft-серверу?",
+        "mc_addr_auto": "Авто (auto) — по тому же адресу, откуда скачаны моды (лучший выбор для LAN и Radmin VPN)",
+        "mc_addr_custom": "Указать свой IP или буквенный домен хостинга (например play.myserver.net или 26.x.x.x)",
+        "q_mc_ip": "IP или буквенный домен Minecraft-сервера (например play.myserver.net или 26.12.34.56):",
+        "err_mc_host": "Введи корректный IP или буквенный домен (например play.example.com или 26.12.34.56)!",
         "q_mc_port": "Порт Minecraft-сервера:",
-        "q_del_mods": "Удалять ли моды, которые игроки закинули себе вручную?",
-        "del_no": "Нет — не трогать чужие клиентские моды (рекомендуется)",
-        "del_yes": "Да — строгий режим сборки (удалять всё лишнее)",
+        "q_del_mods": "Что делать с модами, которые игроки закинули себе вручную?",
+        "del_no": "Не трогать личные клиентские моды игрока (рекомендуется)",
+        "del_yes": "Строгий режим — убирать сторонние моды в mods/old-mods/",
         "q_hide": "Скрывать ли настоящие имена модов у клиентов?",
         "hide_none": "none — не скрывать (обычные имена .jar)",
         "hide_words": "words — случайные слова (silent-amber-otter-42.jar)",
@@ -64,6 +70,8 @@ STRINGS = {
         "scope_pick": "Выбрать конкретные моды из списка",
         "q_hide_pick": "Отметь пробелом моды, которые нужно скрыть:",
         "q_hide_manual": "Перечисли имена .jar через запятую (пусто = скрывать все):",
+        "q_bg": "Раздавать ли игрокам кастомный фон лаунчера (файл background.png / .jpg / .webp в папке сервера)?",
+        "bg_hint": "💡 Положи картинку background.png или background.jpg рядом с config.txt — лаунчер подхватит её автоматически!",
         "q_http_port": "HTTP TCP-порт раздачи модов:",
         "q_udp_port": "UDP-порт автообнаружения:",
         "q_rl": "Лимит запросов с одного IP в минуту (рекомендуется 300, 0 = выключить):",
@@ -82,31 +90,36 @@ STRINGS = {
         "loader": "🧩 Mod loader",
         "java_ver": "☕ Required Java version",
         "auto_join": "🚀 Auto-join Minecraft server",
-        "mc_addr": "🌍 Minecraft server address (IP:port)",
-        "del_user_mods": "🧹 Remove unmanaged player mods",
+        "mc_addr": "🌍 Minecraft server address (IP / domain)",
+        "del_user_mods": "🧹 Unmanaged player mods",
         "hide_mods": "🕵  Cloak mod filenames",
+        "bg_opt": "🖼  Custom launcher background",
         "ports_rl": "🔌 Ports & per-IP Rate-Limit",
         "exit": "✅ Done — exit",
         "yes": "Yes",
         "no": "No",
-        "default_mc": "default (.minecraft)",
+        "default_mc": "player's folder setting",
         "saved": "✔ Saved to config.txt!",
         "q_lang": "Choose language / Выбери язык:",
         "q_name": "Server display name (shown in players' launchers):",
-        "q_folder": "Client folder name (empty = default .minecraft; only a-z, 0-9, _, -, .):",
+        "q_folder": "Client folder name (empty = player's folder setting; only a-z, 0-9, _, -, .):",
         "err_folder": "Use only ASCII letters, digits, '_', '-' or '.' (or leave empty)!",
-        "q_mc_ver": "Minecraft version (e.g. 1.20.1, 1.21.1, 1.19.2):",
+        "q_mc_ver": "Minecraft version (e.g. 1.20.1, 1.21.1, 1.16.5):",
         "q_loader": "Choose mod loader:",
         "q_java": "Required Java version on clients:",
         "java_auto": "Auto (detected from Minecraft version)",
         "java_custom": "Enter custom major version…",
         "q_java_num": "Java major version (integer 8–40):",
         "q_auto_join": "Automatically connect players to the Minecraft server on launch?",
-        "q_mc_ip": "Minecraft server IP (e.g. your Radmin VPN IP 26.x.x.x):",
+        "q_mc_addr_mode": "How should players connect to the Minecraft server?",
+        "mc_addr_auto": "Auto (auto) — use the same IP/domain as mod sync (best for LAN & Radmin VPN)",
+        "mc_addr_custom": "Specify custom IP or alphabetic hosting domain (e.g. play.myserver.net or 26.x.x.x)",
+        "q_mc_ip": "Minecraft server IP or domain (e.g. play.myserver.net or 26.12.34.56):",
+        "err_mc_host": "Enter a valid IP or domain name (e.g. play.example.com or 26.12.34.56)!",
         "q_mc_port": "Minecraft server port:",
-        "q_del_mods": "Remove custom mods added manually by players?",
-        "del_no": "No — keep players' personal QoL mods (recommended)",
-        "del_yes": "Yes — strict modpack mode (remove unmanaged .jar files)",
+        "q_del_mods": "How to handle custom mods added manually by players?",
+        "del_no": "Keep players' personal QoL mods (recommended)",
+        "del_yes": "Strict modpack mode — move unmanaged mods to mods/old-mods/",
         "q_hide": "Cloak mod filenames on client machines?",
         "hide_none": "none — keep original .jar names",
         "hide_words": "words — random word slugs (silent-amber-otter-42.jar)",
@@ -116,6 +129,8 @@ STRINGS = {
         "scope_pick": "Select specific mods",
         "q_hide_pick": "Press Space to select mods to cloak:",
         "q_hide_manual": "Comma-separated .jar filenames (empty = cloak all):",
+        "q_bg": "Serve custom launcher background to players (background.png / .jpg / .webp in server folder)?",
+        "bg_hint": "💡 Drop background.png or background.jpg next to config.txt — launchers will pick it up automatically!",
         "q_http_port": "HTTP TCP port:",
         "q_udp_port": "UDP discovery port:",
         "q_rl": "Per-IP rate limit in requests/min (recommended 300, 0 = off):",
@@ -131,6 +146,16 @@ def _ask(prompt_obj):
     if res is None:
         raise KeyboardInterrupt
     return res
+
+
+def _validate_port(val, lang="ru"):
+    t = STRINGS.get(lang, STRINGS["ru"])
+    return True if (isinstance(val, str) and val.strip().isdigit() and 1 <= int(val.strip()) <= 65535) else t["err_port"]
+
+
+def _validate_mc_host_input(val, lang="ru"):
+    t = STRINGS.get(lang, STRINGS["ru"])
+    return True if C.validate_mc_host(val) else t["err_mc_host"]
 
 
 def edit_language(cfg):
@@ -237,20 +262,47 @@ def edit_auto_join_and_addr(cfg, t, ask_addr=True):
 
 
 def edit_mc_addr_only(cfg, t):
-    ip = _ask(questionary.text(
-        t["q_mc_ip"],
-        default=cfg.get("minecraft_server", "127.0.0.1"),
-        validate=lambda v: True if v.strip() and " " not in v.strip() else "!",
+    cur_host = str(cfg.get("minecraft_server") or "auto").strip()
+    is_auto = cur_host.lower() in ("", "auto", "127.0.0.1")
+    mode = _ask(questionary.select(
+        t["q_mc_addr_mode"],
+        choices=[
+            Choice(t["mc_addr_auto"], value="auto"),
+            Choice(t["mc_addr_custom"], value="custom"),
+        ],
+        default="auto" if is_auto else "custom",
         style=CATPPUCCIN_STYLE,
     ))
-    port = _ask(questionary.text(
-        t["q_mc_port"],
-        default=str(cfg.get("minecraft_port", 25565)),
-        validate=lambda v: True if (v.strip().isdigit() and 1 <= int(v.strip()) <= 65535) else t["err_port"],
-        style=CATPPUCCIN_STYLE,
-    ))
-    cfg["minecraft_server"] = ip.strip()
-    cfg["minecraft_port"] = int(port.strip())
+    lang = cfg.get("language", "ru")
+    if mode == "auto":
+        cfg["minecraft_server"] = "auto"
+        port = _ask(questionary.text(
+            t["q_mc_port"],
+            default=str(cfg.get("minecraft_port", 25565)),
+            validate=lambda v: _validate_port(v, lang),
+            style=CATPPUCCIN_STYLE,
+        ))
+        cfg["minecraft_port"] = int(port.strip())
+    else:
+        def_host = "" if is_auto else cur_host
+        raw_host = _ask(questionary.text(
+            t["q_mc_ip"],
+            default=def_host,
+            validate=lambda v: _validate_mc_host_input(v, lang),
+            style=CATPPUCCIN_STYLE,
+        ))
+        parsed = C.parse_mc_address(raw_host, fallback_port=cfg.get("minecraft_port", 25565))
+        cfg["minecraft_server"] = parsed[0]
+        if ":" in raw_host:
+            cfg["minecraft_port"] = parsed[1]
+        else:
+            port = _ask(questionary.text(
+                t["q_mc_port"],
+                default=str(cfg.get("minecraft_port", 25565)),
+                validate=lambda v: _validate_port(v, lang),
+                style=CATPPUCCIN_STYLE,
+            ))
+            cfg["minecraft_port"] = int(port.strip())
     C.save(cfg)
 
 
@@ -313,22 +365,30 @@ def edit_hide_mods(cfg, t):
     C.save(cfg)
 
 
-def _validate_port(val, lang="ru"):
-    t = STRINGS.get(lang, STRINGS["ru"])
-    return True if (isinstance(val, str) and val.strip().isdigit() and 1 <= int(val.strip()) <= 65535) else t["err_port"]
+def edit_background(cfg, t):
+    ans = _ask(questionary.confirm(
+        t["q_bg"],
+        default=bool(cfg.get("serve_background", True)),
+        style=CATPPUCCIN_STYLE,
+    ))
+    cfg["serve_background"] = bool(ans)
+    C.save(cfg)
+    if ans and M.scan_background(cfg) is None:
+        print(t["bg_hint"])
 
 
 def edit_ports_and_ratelimit(cfg, t):
+    lang = cfg.get("language", "ru")
     hp = _ask(questionary.text(
         t["q_http_port"],
         default=str(cfg.get("http_port", 25456)),
-        validate=lambda v: True if (v.strip().isdigit() and 1 <= int(v.strip()) <= 65535) else t["err_port"],
+        validate=lambda v: _validate_port(v, lang),
         style=CATPPUCCIN_STYLE,
     ))
     up = _ask(questionary.text(
         t["q_udp_port"],
         default=str(cfg.get("discovery_port", 25457)),
-        validate=lambda v: True if (v.strip().isdigit() and 1 <= int(v.strip()) <= 65535) else t["err_port"],
+        validate=lambda v: _validate_port(v, lang),
         style=CATPPUCCIN_STYLE,
     ))
     rl = _ask(questionary.text(
@@ -354,6 +414,7 @@ def run_wizard(cfg):
     edit_auto_join_and_addr(cfg, t, ask_addr=True)
     edit_delete_user_mods(cfg, t)
     edit_hide_mods(cfg, t)
+    edit_background(cfg, t)
     edit_ports_and_ratelimit(cfg, t)
     print(f"\n{t['saved']}")
 
@@ -375,6 +436,8 @@ def main():
             java_disp = f"Java {cfg['java_version']}" if cfg["java_version"] else "auto"
             aj_disp = t["yes"] if cfg["auto_join"] else t["no"]
             del_disp = t["yes"] if cfg["delete_user_mods"] else t["no"]
+            bg_meta = M.scan_background(cfg)
+            bg_disp = (bg_meta["name"] if bg_meta else t["yes"]) if cfg.get("serve_background", True) else t["no"]
             rl_disp = f"{cfg['rate_limit_per_min']}/min" if cfg["rate_limit_per_min"] else "off"
 
             print(f"\n{t['banner']}")
@@ -392,6 +455,7 @@ def main():
                     Choice(f"{t['mc_addr']}: [{cfg['minecraft_server']}:{cfg['minecraft_port']}]", value="mc_addr"),
                     Choice(f"{t['del_user_mods']}: [{del_disp}]", value="del_mods"),
                     Choice(f"{t['hide_mods']}: [{cfg['hide_mods']}]", value="hide"),
+                    Choice(f"{t['bg_opt']}: [{bg_disp}]", value="bg"),
                     Choice(f"{t['ports_rl']}: [TCP {cfg['http_port']}, UDP {cfg['discovery_port']}, RL {rl_disp}]", value="ports"),
                     Choice(t["exit"], value="exit"),
                 ],
@@ -423,6 +487,8 @@ def main():
                 edit_delete_user_mods(cfg, t)
             elif action == "hide":
                 edit_hide_mods(cfg, t)
+            elif action == "bg":
+                edit_background(cfg, t)
             elif action == "ports":
                 edit_ports_and_ratelimit(cfg, t)
     except KeyboardInterrupt:

@@ -9,8 +9,16 @@ from srv_config import MODS_DIR, RESOURCEPACKS_DIR
 
 _cache = {}
 _rp_cache = {}
+_bg_cache = {}
 _alias_to_path = {}
 _lock = threading.Lock()
+
+_BG_CANDIDATES = (
+    ("background.png", "image/png"),
+    ("background.jpg", "image/jpeg"),
+    ("background.jpeg", "image/jpeg"),
+    ("background.webp", "image/webp"),
+)
 
 _WORDS_A = (
     "silent", "cosmic", "velvet", "frosty", "golden", "shadow", "crimson", "cobalt",
@@ -181,6 +189,40 @@ def resolve_resourcepack(name):
         return None
     p = RESOURCEPACKS_DIR / name
     return p if p.is_file() else None
+
+
+def resolve_background(cfg=None):
+    """Возвращает (Path, mime_type) активного фона сервера или (None, None)."""
+    if cfg is None:
+        cfg = C.load()
+    if not cfg.get("serve_background", True):
+        return None, None
+    base = C.BASE
+    for fname, mime in _BG_CANDIDATES:
+        p = base / fname
+        if p.is_file():
+            return p, mime
+    return None, None
+
+
+def scan_background(cfg=None):
+    """Возвращает {'name', 'sha256', 'size'} для кастомного фона лаунчера или None."""
+    p, _mime = resolve_background(cfg)
+    if p is None:
+        return None
+    with _lock:
+        try:
+            st = p.stat()
+            if st.st_size <= 0 or st.st_size > 25 * 1024 * 1024:
+                return None
+            key = (str(p), st.st_mtime_ns, st.st_size)
+            cached = _bg_cache.get("bg")
+            if not cached or cached[0] != key:
+                cached = (key, _sha256(p))
+                _bg_cache["bg"] = cached
+            return {"name": p.name, "sha256": cached[1], "size": st.st_size}
+        except OSError:
+            return None
 
 
 # Обратная совместимость со старыми вызовами

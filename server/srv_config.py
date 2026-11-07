@@ -13,11 +13,12 @@ SALT_FILE = BASE / ".hide_salt"
 VALID_LOADERS = ("fabric", "forge", "neoforge", "quilt", "none")
 VALID_LANGS = ("ru", "en")
 _FOLDER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,47}$")
+_DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$")
 
 DEFAULTS = {
     "language": "ru",               # ru | en
     "server_name": "botyaraMC",     # отображаемое имя сервера в лаунчере
-    "client_folder": "",            # пусто = обычный .minecraft, либо имя подпапки клиента
+    "client_folder": "",            # пусто = по настройкам клиента, либо имя подпапки сборки
     "http_port": 25456,
     "discovery_port": 25457,
     "rate_limit_per_min": 300,      # запросов в минуту с одного IP (0 = без лимита)
@@ -26,9 +27,10 @@ DEFAULTS = {
     "java_version": None,           # None = auto, либо число (8, 17, 21...)
     "hide_mods": "none",            # none | words | hash
     "hide_mods_list": [],           # список .jar через запятую (пусто = скрывать все)
-    "delete_user_mods": False,      # удалять ли сторонние моды, добавленные игроком вручную
+    "delete_user_mods": False,      # убирать ли сторонние моды, добавленные игроком вручную
+    "serve_background": True,       # раздавать ли background.png/.jpg/.webp как фон лаунчера
     "auto_join": True,              # автоматически заходить на MC-сервер при запуске игры
-    "minecraft_server": "127.0.0.1",
+    "minecraft_server": "auto",     # auto | IP (26.x.x.x) | буквенный домен (play.example.com)
     "minecraft_port": 25565,
 }
 
@@ -41,6 +43,66 @@ def sanitize_folder_name(raw):
     if ".." in s or "/" in s or "\\" in s:
         return ""
     return s if _FOLDER_RE.fullmatch(s) else ""
+
+
+def parse_mc_address(raw_host, fallback_port=25565):
+    """
+    Разбирает адрес Minecraft-сервера: поддерживает 'auto', IPv4, localhost,
+    буквенные домены хостингов (в т.ч. IDN .рф) и необязательный ':порт'.
+    Возвращает (normalized_host, port) или None при ошибке.
+    """
+    s = str(raw_host or "").strip().rstrip("/")
+    for prefix in ("minecraft://", "http://", "https://"):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix):]
+    if not s:
+        return "auto", int(fallback_port or 25565)
+    if " " in s or "/" in s or "\\" in s:
+        return None
+
+    port = int(fallback_port or 25565)
+    host = s
+    if ":" in s:
+        h_part, _, p_part = s.rpartition(":")
+        if not p_part.isdigit() or not (1 <= int(p_part) <= 65535):
+            return None
+        host = h_part.strip()
+        port = int(p_part)
+
+    if not host:
+        return None
+    if host.lower() == "auto":
+        return "auto", port
+    if host.lower() == "localhost":
+        return "localhost", port
+
+    # Если строка состоит только из цифр и точек — проверяем строгий IPv4
+    if re.fullmatch(r"[0-9.]+", host):
+        octets = host.split(".")
+        if len(octets) != 4 or any(not o.isdigit() or not (0 <= int(o) <= 255) for o in octets):
+            return None
+        return host, port
+
+    # Буквенный домен хостинга (включая поддомены и IDN вида мойсервер.рф)
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+
+    labels = ascii_host.split(".")
+    if any(not _DOMAIN_LABEL_RE.fullmatch(lb) for lb in labels):
+        return None
+    if len(labels) == 1 and len(ascii_host) < 2:
+        return None
+    return host, port
+
+
+def validate_mc_host(raw):
+    """Проверка корректности хоста Minecraft-сервера (IP, буквенный домен или auto)."""
+    s = str(raw or "").strip()
+    if not s:
+        return False
+    return parse_mc_address(s) is not None
 
 
 def _parse_bool(raw, default=False):
@@ -90,8 +152,10 @@ def render_config(cfg=None, lang=None):
     java_val = str(c["java_version"]) if c.get("java_version") else "auto"
     hide_list_val = ", ".join(c.get("hide_mods_list") or [])
     del_mods_val = "true" if c.get("delete_user_mods") else "false"
+    serve_bg_val = "true" if c.get("serve_background", True) else "false"
     auto_join_val = "true" if c.get("auto_join", True) else "false"
     folder_val = sanitize_folder_name(c.get("client_folder", ""))
+    mc_srv_val = str(c.get("minecraft_server") or "auto").strip() or "auto"
 
     if lg == "en":
         return f"""\
@@ -106,8 +170,8 @@ language = en
 # Display name of your server shown in players' launchers
 server_name = {c['server_name']}
 
-# Optional isolated client folder name (leave empty to use default .minecraft,
-# or set e.g. my_rpg_server to store mods/resourcepacks in .minecraft/instances/my_rpg_server)
+# Optional isolated client folder name (leave empty to follow player's folder setting,
+# or set e.g. my_rpg_server to isolate mods/resourcepacks for this server)
 client_folder = {folder_val}
 
 # HTTP TCP port (serving manifest, mods & resourcepacks) and UDP discovery port
@@ -133,12 +197,19 @@ hide_mods = {c['hide_mods']}
 # Comma-separated .jar names to cloak selectively (leave empty to cloak ALL mods when hide_mods != none)
 hide_mods_list = {hide_list_val}
 
-# Remove unmanaged custom mods added manually by players (true = strict modpack, false = allow client QoL mods)
+# Move unmanaged custom mods added manually by players to mods/old-mods/ (true = strict modpack, false = keep)
 delete_user_mods = {del_mods_val}
 
+# Serve custom launcher background if background.png / background.jpg / background.webp exists in server folder
+serve_background = {serve_bg_val}
+
 # Automatically connect players straight into the Minecraft server upon game launch
+# minecraft_server accepts:
+#   auto             - connect to the exact same IP/domain used for mod sync (best for LAN / Radmin VPN)
+#   26.12.34.56      - explicit numeric IPv4 address
+#   play.example.com - alphabetic domain name (e.g. external Minecraft hosting)
 auto_join = {auto_join_val}
-minecraft_server = {c['minecraft_server']}
+minecraft_server = {mc_srv_val}
 minecraft_port = {c['minecraft_port']}
 """
 
@@ -154,8 +225,8 @@ language = ru
 # Название сервера (отображается у игроков в лаунчере)
 server_name = {c['server_name']}
 
-# Имя отдельной папки сборки у клиентов (оставь пустым для обычного .minecraft,
-# либо укажи например my_rpg_pack — тогда создастся .minecraft/instances/my_rpg_pack)
+# Имя отдельной папки сборки у клиентов (оставь пустым для режима игрока,
+# либо укажи например my_rpg_pack для собственной изолированной папки сервера)
 client_folder = {folder_val}
 
 # TCP-порт раздачи файлов и UDP-порт автообнаружения в сети
@@ -181,12 +252,19 @@ hide_mods = {c['hide_mods']}
 # Если нужно скрыть ТОЛЬКО отдельные моды - перечисли через запятую (пусто = скрывать все)
 hide_mods_list = {hide_list_val}
 
-# Удалять ли сторонние моды, которые игрок закинул себе сам (true = строгая сборка, false = не трогать)
+# Убирать ли сторонние моды игрока в mods/old-mods/ (true = строгая сборка, false = не трогать)
 delete_user_mods = {del_mods_val}
 
+# Раздавать ли кастомный фон лаунчера, если в папке сервера лежит background.png / .jpg / .webp
+serve_background = {serve_bg_val}
+
 # Автоматически подключать игроков к Minecraft-серверу сразу после запуска игры
+# minecraft_server поддерживает:
+#   auto             - заходить по тому же адресу, откуда скачаны моды (идеально для LAN и Radmin VPN)
+#   26.12.34.56      - конкретный цифровой IP-адрес
+#   play.example.com - буквенный домен хостинга
 auto_join = {auto_join_val}
-minecraft_server = {c['minecraft_server']}
+minecraft_server = {mc_srv_val}
 minecraft_port = {c['minecraft_port']}
 """
 
@@ -274,6 +352,15 @@ def load():
         cfg["hide_mods_list"] = []
 
     cfg["delete_user_mods"] = _parse_bool(raw.get("delete_user_mods"), False)
+    cfg["serve_background"] = _parse_bool(raw.get("serve_background"), True)
     cfg["auto_join"] = _parse_bool(raw.get("auto_join"), True)
-    cfg["minecraft_server"] = str(raw.get("minecraft_server", DEFAULTS["minecraft_server"])).strip()
+
+    raw_mc_srv = str(raw.get("minecraft_server", DEFAULTS["minecraft_server"])).strip()
+    parsed_mc = parse_mc_address(raw_mc_srv, fallback_port=cfg["minecraft_port"])
+    if parsed_mc is not None:
+        cfg["minecraft_server"] = parsed_mc[0]
+        if ":" in raw_mc_srv and "minecraft_port" not in raw:
+            cfg["minecraft_port"] = parsed_mc[1]
+    else:
+        cfg["minecraft_server"] = raw_mc_srv or "auto"
     return cfg

@@ -17,14 +17,15 @@ import sync
 log = logging.getLogger("botyaraMC.cli")
 RES_RE = re.compile(r"^(\d{3,5})[xXхХ](\d{3,5})$")
 DEFAULT_PORT = 25456
+_DOMAIN_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$")
 
 
 def parse_hostport(text):
     t = (text or "").strip().rstrip("/")
     for prefix in ("http://", "https://"):
-        if t.startswith(prefix):
+        if t.lower().startswith(prefix):
             t = t[len(prefix):]
-    if not t or " " in t:
+    if not t or " " in t or "/" in t or "\\" in t:
         return None
     host, port = t, DEFAULT_PORT
     if ":" in t:
@@ -40,10 +41,13 @@ def parse_hostport(text):
         if len(parts) != 4 or any(not x.isdigit() or not 0 <= int(x) <= 255 for x in parts):
             return None
         return host, port
-    # Иначе проверяем корректное имя хоста / домен
-    if len(host) < 2 or not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*", host):
+    # Поддержка буквенных доменов хостинга, поддоменов и IDN (.рф)
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError:
         return None
-    if host.startswith("-") or host.endswith("-"):
+    labels = ascii_host.split(".")
+    if len(ascii_host) < 2 or any(not _DOMAIN_LABEL_RE.fullmatch(lb) for lb in labels):
         return None
     return host, port
 
@@ -64,9 +68,11 @@ def build_parser():
     p.add_argument("--nick", type=str, default=None,
                    help="In-game nickname (3–16 chars: A-Za-z0-9_)")
     p.add_argument("--server", type=str, default=None,
-                   help="Sync server address (e.g. 26.12.34.56 or 26.12.34.56:25456)")
+                   help="Sync server address (IP or domain, e.g. 26.12.34.56 or sync.example.com:25456)")
     p.add_argument("--mc-dir", type=str, default=None,
                    help="Path to base .minecraft directory")
+    p.add_argument("--isolation", type=str, choices=["none", "family", "version"], default=None,
+                   help="Version folder isolation mode: none, family (home/Fabric-1.16), version (home/Fabric 1.16.5)")
     p.add_argument("--ram", type=int, default=None,
                    help="Fixed RAM allocation in MB (e.g. 4096)")
     p.add_argument("--auto-ram", action="store_true",
@@ -81,6 +87,10 @@ def build_parser():
                    help="Launch Minecraft in fullscreen mode")
     p.add_argument("--resolution", type=str, default=None,
                    help="Custom window resolution WxH (e.g. 1920x1080)")
+    p.add_argument("--gamemode", action="store_true",
+                   help="(Linux) Wrap game launch with Feral GameMode (gamemoderun)")
+    p.add_argument("--mangohud", action="store_true",
+                   help="(Linux) Enable MangoHud overlay (mangohud)")
     p.add_argument("--timeout", type=int, default=None,
                    help="Launch timeout in seconds (0 to disable)")
     p.add_argument("--no-wait", action="store_true",
@@ -103,6 +113,13 @@ def run_cli(args):
 
     if args.mc_dir:
         cfg["mc_dir"] = args.mc_dir
+    if args.isolation in ("none", "family", "version"):
+        cfg["isolation_mode"] = args.isolation
+    if args.gamemode:
+        cfg["use_gamemode"] = True
+    if args.mangohud:
+        cfg["use_mangohud"] = True
+
     mc_dir = mc.find_minecraft_dir(cfg.get("mc_dir", ""))
 
     if args.detect_java:
@@ -172,13 +189,13 @@ def run_cli(args):
 
     if manifest is None:
         _status("Searching for sync server on LAN / Radmin VPN…" if en else "Ищем sync-сервер в локальной сети / Radmin VPN…")
-        found = discovery.discover_full(2.5)
-        if found:
-            fh, fp, fname = found
+        candidates = discovery.discover_all(2.2)
+        matched = cfgmod.match_discovered_server(cfg, candidates)
+        if matched:
+            fh, fp, _fname, _entry = matched
             try:
                 manifest = sync.fetch_manifest(fh, fp)
                 host, port = fh, fp
-                cfgmod.add_or_select_server(cfg, host, port, name=fname or manifest.get("server_name", ""))
                 _status(f"Found server {host}:{port}" if en else f"Найден сервер {host}:{port}")
             except Exception:
                 log.exception("найденный сервер не отдал манифест")
@@ -201,6 +218,7 @@ def run_cli(args):
             manifest, mc_dir,
             is_host=cfg.get("is_host", False),
             server_mods_dir=cfg.get("server_mods_dir", ""),
+            cfg=cfg,
         )
         if plan["total_bytes"] > 0:
             sz = sync.format_size(plan["total_bytes"], lang=lang)
@@ -226,6 +244,7 @@ def run_cli(args):
             server_mods_dir=cfg.get("server_mods_dir", ""),
             on_progress=on_prog,
             lang=lang,
+            cfg=cfg,
         )
         if not ok:
             _status("Warning: some files failed to sync (see launcher.log)." if en else "Предупреждение: часть файлов не удалось синхронизировать (см. launcher.log).")
@@ -243,13 +262,13 @@ def run_cli(args):
     ram_mb = cfgmod.effective_ram_mb(cfg)
     srv = manifest.get("server") or {}
     client_folder = manifest.get("client_folder", "")
-    game_dir = cfgmod.resolve_game_dir(mc_dir, client_folder)
+    game_dir = cfgmod.resolve_game_dir(mc_dir, client_folder, cfg=cfg, manifest=manifest)
     log_path = cfgmod.config_dir() / "game.log"
     start_time = time.time()
     _status(
-        f"Launching {vid} | nick: {cfg['nickname']} | RAM: {ram_mb} MB | preset: {cfg.get('jvm_preset', 'G1GC')}"
+        f"Launching {vid} | nick: {cfg['nickname']} | RAM: {ram_mb} MB | folder: {game_dir.name}"
         if en else
-        f"Запускаем {vid} | ник: {cfg['nickname']} | RAM: {ram_mb} МБ | пресет: {cfg.get('jvm_preset', 'G1GC')}"
+        f"Запускаем {vid} | ник: {cfg['nickname']} | RAM: {ram_mb} МБ | папка: {game_dir.name}"
     )
     proc = mc.launch(
         mc_dir, vid, cfg["nickname"],
@@ -258,6 +277,7 @@ def run_cli(args):
         cfg=cfg, server_java_version=manifest.get("java_version"),
         auto_join=bool(srv.get("auto_join", True)),
         client_folder=client_folder,
+        manifest=manifest,
     )
     _status(f"Process started (PID {proc.pid})." if en else f"Процесс запущен (PID {proc.pid}).")
 

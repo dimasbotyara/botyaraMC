@@ -141,7 +141,7 @@
       <g transform="translate(0, 0)">
         <rect width="166" height="36" rx="10" fill="#181825" stroke="#45475a" stroke-width="1.2"/>
         <path d="M23,10 L15,20 H21 L19,27 L27,17 H21 Z" fill="#cba6f7"/>
-        <text x="34" y="22.5" fill="#cba6f7">HTTP Range Sync</text>
+        <text x="34" y="22.5" fill="#cba6f7">Smart Download</text>
       </g>
 
       <!-- Chip 2: Auto Java & ZGC -->

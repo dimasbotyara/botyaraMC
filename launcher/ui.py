@@ -724,44 +724,62 @@ class App(ctk.CTk):
     # ============================================================ ГЛАВНОЕ ОКНО
     def _view_main(self):
         root = self.frame(self, "bg")
-        top = self.frame(root, "bg")
-        top.pack(fill="x", padx=22, pady=(16, 0))
+        root.grid_rowconfigure(0, weight=1)
+        root.grid_columnconfigure(0, weight=1)
 
-        self.button(top, self._tr("top_settings"), lambda: self.show("settings"), primary=False,
-                    width=136, height=34).pack(side="right")
-        self.button(top, self._tr("top_folders"), self._open_folders_dialog, primary=False,
-                    width=116, height=34).pack(side="right", padx=(0, 8))
-        self.button(top, self._tr("top_log"), self._open_latest_game_log, primary=False,
-                    width=90, height=34).pack(side="right", padx=(0, 8))
-        self.button(top, "⌨", self._open_hotkeys_dialog, primary=False,
-                    width=38, height=34).pack(side="right", padx=(0, 8))
+        # ── Top bar (34px height, aligned with buttons) ──
+        top = self.frame(root, "bg", height=34)
+        top.grid(row=0, column=0, sticky="ew", padx=22, pady=(16, 0))
+        top.grid_propagate(False)
+        top.grid_columnconfigure(0, weight=0)
+        top.grid_columnconfigure(1, weight=1)
+        top.grid_columnconfigure(2, weight=0)
 
+        # Left: Host badge + Auto-RAM + Server name
         left_info = self.frame(top, "bg")
-        left_info.pack(side="left")
-        if self.cfg["is_host"]:
+        left_info.grid(row=0, column=0, sticky="w")
+
+        if self.cfg.get("is_host"):
             self.label(left_info, self._tr("host_badge"), 13, True, color="accent").pack(
                 side="left", padx=(0, 10))
         ram_now = cfgmod.effective_ram_mb(self.cfg)
         ram_tag = self._tr("auto_ram_tag") if self.cfg.get("auto_ram", True) else self._tr("ram_tag")
+        active_s = cfgmod.active_server(self.cfg)
+        srv_name = ((active_s or {}).get("name") or "").strip()
+        srv_display = f" 🌐 {srv_name}" if srv_name else ""
         self.label(
             left_info,
-            f"{ram_tag}: {ram_now} {self._tr('mb_unit')} • {self.cfg.get('jvm_preset', 'G1GC')}",
+            f"{ram_tag}: {ram_now} {self._tr('mb_unit')}{srv_display}",
             12, color="subtext",
         ).pack(side="left")
 
-        center = self.frame(root, "bg")
-        center.pack(expand=True)
-        self.label(center, "botyaraMC", 56, True, "accent").pack()
-        self.greeting_lbl = self.label(center, self._greeting, 18, color="subtext")
+        # Right: Top buttons (34px height)
+        btns = self.frame(top, "bg")
+        btns.grid(row=0, column=2, sticky="e")
+        self.button(btns, self._tr("top_settings"), lambda: self.show("settings"), primary=False,
+                    width=136, height=34).pack(side="right")
+        self.button(btns, self._tr("top_folders"), self._open_folders_dialog, primary=False,
+                    width=116, height=34).pack(side="right", padx=(0, 8))
+        self.button(btns, self._tr("top_log"), self._open_latest_game_log, primary=False,
+                    width=90, height=34).pack(side="right", padx=(0, 8))
+        self.button(btns, "⌨", self._open_hotkeys_dialog, primary=False,
+                    width=38, height=34).pack(side="right", padx=(0, 8))
+
+        # ── Center hero block (vertically anchored at true center) ──
+        hero = self.frame(root, "bg")
+        hero.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.label(hero, "botyaraMC", 56, True, "accent").pack()
+        self.greeting_lbl = self.label(hero, self._greeting, 18, color="subtext")
         self.greeting_lbl.pack(pady=(2, 10))
 
-        # Быстрое переключение сервера прямо на главном экране (если серверов несколько)
+        # Quick server switch (if multiple servers)
         self.server_title_lbl = None
         self._main_srv_om = None
         self._main_srv_map = {}
         servers = self.cfg.get("servers") or []
         if len(servers) > 1:
-            srv_row = self.frame(center, "bg")
+            srv_row = self.frame(hero, "bg")
             srv_row.pack(pady=(0, 6))
 
             def _on_switch_main_srv(chosen):
@@ -780,17 +798,23 @@ class App(ctk.CTk):
             self._main_srv_om.pack()
             self._refresh_main_server_header()
         else:
-            active_s = cfgmod.active_server(self.cfg)
-            init_srv_title = f"🌐 {active_s['name']}" if (active_s and active_s.get("name")) else ""
-            self.server_title_lbl = self.label(center, init_srv_title, 14, True, color="text")
+            init_srv_title = f"🌐 {srv_name}" if srv_name else ""
+            self.server_title_lbl = self.label(hero, init_srv_title, 14, True, color="text")
             if init_srv_title:
                 self.server_title_lbl.pack(pady=(0, 4))
 
-        self.badge_lbl = self.label(center, self._server_badge_text, 13, color="subtext")
-        self.badge_lbl.pack(pady=(0, 20))
+        # Badge (mods count, etc.)
+        self.badge_lbl = self.label(hero, self._server_badge_text, 13, color="subtext")
+        self.badge_lbl.pack(pady=(0, 10))
 
+        # Live MC server ping badge
+        self.mc_ping_lbl = self.label(hero, "", 13, color="subtext")
+        self.mc_ping_lbl.pack(pady=(0, 20))
+        self._start_mc_ping_loop()
+
+        # Play button
         self.play_btn = self.button(
-            center, self._play_btn_text, self.on_play,
+            hero, self._play_btn_text, self.on_play,
             width=390, height=68,
             font=ctk.CTkFont(size=20, weight="bold"),
         )
@@ -798,21 +822,163 @@ class App(ctk.CTk):
         self._bind_play_hover(self.play_btn)
         if self.playing:
             self.play_btn.configure(state="disabled")
+            self._play_hover_t = 1.0
+            self._paint_play_button_color()
 
-        # #9: Прогрессбар скрыт по умолчанию и появляется только во время запуска игры
-        self.progress_holder = self.frame(center, "bg")
-        self.progress_holder.pack(pady=(16, 0))
+        # ── Lower container: progress bar (hidden by default) + status ──
+        lower = self.frame(root, "bg")
+        lower.place(relx=0.5, rely=0.5, anchor="center", y=220)
+
+        self.progress_holder = self.frame(lower, "bg")
+        self.progress_holder.pack(pady=(0, 8))
         self.progress = ctk.CTkProgressBar(self.progress_holder, width=400)
         self.T(self.progress, fg_color="surface", progress_color="accent")
         self.progress.set(self._prog)
         if self.playing:
             self.progress.pack(pady=(6, 8))
 
-        self.status_lbl = self.label(center, self._status, 14, color="subtext", wraplength=700)
+        self.status_lbl = self.label(lower, self._status, 14, color="subtext", wraplength=700)
         self.status_lbl.pack(pady=(6, 0))
 
-        # #15: Нижняя строка подсказок хоткеев убрана по запросу (хоткеи доступны по кнопке ⌨ / F1)
+        # Bind R key (and Cyrillic К) for random greeting
+        self.bind_all("<Key-r>", lambda e: self._randomize_greeting(e))
+        self.bind_all("<Key-R>", lambda e: self._randomize_greeting(e))
+        # Cyrillic 'к' — пробуем разные варианты, не все Tk их понимают
+        for seq in ("<Key-0x6B>", "<Key-к>", "<Key-Cyrillic_ka>", "<Key-KCyrillic>"):
+            try:
+                self.bind_all(seq, lambda e: self._randomize_greeting(e))
+            except Exception:
+                pass
+
         return root
+
+    def _start_mc_ping_loop(self):
+        """Background ping of the Minecraft server shown in manifest.server (host/port)."""
+        if getattr(self, "_mc_ping_job", None):
+            try:
+                self.after_cancel(self._mc_ping_job)
+            except Exception:
+                pass
+        self._mc_ping_job = self.after(5000, self._update_mc_ping)
+
+    def _update_mc_ping(self):
+        self._mc_ping_job = None
+        try:
+            if not self.winfo_exists():
+                return
+            manifest = self._last_manifest or cfgmod.load_cache(self.cfg.get("active_server_id") or None)
+            if manifest:
+                srv = manifest.get("server") or {}
+                mchost = srv.get("host")
+                mcport = srv.get("port") or 25565
+                if mchost:
+                    # Use sync_host as fallback for "auto"
+                    result = mc.ping_mc_server(mchost, mcport, sync_host=self.cfg.get("sync_host", ""), timeout=1.5)
+                    lang = self._lang()
+                    if result.get("online"):
+                        txt = self._tr("mc_ping_online", on=result["players_online"], mx=result["players_max"], ms=result["latency_ms"])
+                    else:
+                        txt = self._tr("mc_ping_offline")
+                    self.mc_ping_lbl.configure(text=txt)
+        except Exception:
+            pass
+        self._mc_ping_job = self.after(10000, self._update_mc_ping)
+
+    def _randomize_greeting(self, event=None):
+        """Switch greeting to a new random phrase (bound to R key)."""
+        # Ignore if focus is in an Entry/Text widget
+        w = self.focus_get()
+        if w is not None:
+            cls = w.winfo_class().lower()
+            if any(t in cls for t in ("entry", "text")):
+                return
+        # Ignore if modifier keys held (Ctrl/Alt/Shift)
+        try:
+            state = event.state if event else 0
+            if state & (0x4 | 0x8 | 0x1):  # Control | Alt | Shift (bitmask)
+                return
+        except Exception:
+            pass
+        self._greeting = i18n.random_greeting(
+            self.cfg.get("nickname") or "",
+            lang=self._lang(),
+            prev=self._greeting,
+        )
+        if hasattr(self, "greeting_lbl") and self.greeting_lbl.winfo_exists():
+            self.greeting_lbl.configure(text=self._greeting)
+
+    def _show_progress_bar(self, visible):
+        try:
+            if not hasattr(self, "progress") or not self.progress.winfo_exists():
+                return
+            if visible:
+                if not self.progress.winfo_manager():
+                    self.progress.pack(pady=(6, 8))
+            else:
+                if self.progress.winfo_manager():
+                    self.progress.pack_forget()
+        except Exception:
+            pass
+
+    def _set_status(self, text):
+        self._status = text
+        try:
+            self.status_lbl.configure(text=text)
+        except Exception:
+            pass
+
+    def _set_progress(self, f):
+        self._prog = max(0.0, min(1.0, f))
+        try:
+            self.progress.set(self._prog)
+        except Exception:
+            pass
+
+    def _set_play_text(self, text):
+        self._play_btn_text = text
+        try:
+            self.play_btn.configure(text=text)
+        except Exception:
+            pass
+
+    def _refresh_main_server_header(self, fallback_name=""):
+        servers = self.cfg.get("servers") or []
+        om = getattr(self, "_main_srv_om", None)
+        if om is not None and om.winfo_exists() and len(servers) > 1:
+            self._main_srv_map.clear()
+            labels = []
+            cur_lbl = None
+            for s in servers:
+                lb = self._server_label(s)
+                if lb in self._main_srv_map:
+                    lb = f"{lb} [{s['id'][-4:]}]"
+                self._main_srv_map[lb] = s
+                labels.append(lb)
+                if s.get("id") == self.cfg.get("active_server_id"):
+                    cur_lbl = lb
+            om.configure(values=labels)
+            if cur_lbl:
+                om.set(cur_lbl)
+            return
+
+        lbl = getattr(self, "server_title_lbl", None)
+        if lbl is not None and lbl.winfo_exists():
+            active_s = cfgmod.active_server(self.cfg)
+            sname = ((active_s or {}).get("name") or fallback_name or "").strip()
+            if sname:
+                lbl.configure(text=f"🌐 {sname}")
+                if not lbl.winfo_manager():
+                    lbl.pack(pady=(0, 4), before=self.badge_lbl)
+            else:
+                if lbl.winfo_manager():
+                    lbl.pack_forget()
+
+    def _set_badge(self, text):
+        self._server_badge_text = text
+        try:
+            self.badge_lbl.configure(text=text)
+        except Exception:
+            pass
 
     def _show_progress_bar(self, visible):
         try:
@@ -991,7 +1157,7 @@ class App(ctk.CTk):
         lang = self._lang()
         try:
             cfg = self.cfg
-            host, port = cfg["sync_host"], cfg["sync_port"]
+            host, port = cfg.get("sync_host", ""), cfg.get("sync_port", DEFAULT_PORT)
             srv_id = cfg.get("active_server_id") or None
             P(self._set_status, i18n.tr(lang, "status_connecting"))
             P(self._set_progress, 0.04)
@@ -1002,16 +1168,14 @@ class App(ctk.CTk):
                 except Exception:
                     log.warning("sync-сервер недоступен по %s:%s, ищем заново", host, port)
             if manifest is None:
-                found = discovery.discover_full(2.0)
-                if found:
-                    fh, fp, fname = found
+                # Smart discovery: discover_all + match_discovered_server
+                candidates = discovery.discover_all(2.2)
+                matched = cfgmod.match_discovered_server(cfg, candidates)
+                if matched:
+                    fh, fp, fname, entry = matched
                     try:
                         manifest = sync.fetch_manifest(fh, fp)
                         host, port = fh, fp
-                        entry = cfgmod.add_or_select_server(
-                            cfg, host, port,
-                            name=manifest.get("server_name") or fname or "",
-                        )
                         srv_id = entry["id"]
                         cfgmod.save(cfg)
                     except Exception:
@@ -1033,8 +1197,9 @@ class App(ctk.CTk):
             if live:
                 plan = sync.plan_sync(
                     manifest, mc_dir,
-                    is_host=cfg["is_host"],
-                    server_mods_dir=cfg["server_mods_dir"],
+                    is_host=cfg.get("is_host", False),
+                    server_mods_dir=cfg.get("server_mods_dir", ""),
+                    cfg=cfg,
                 )
                 if plan["total_bytes"] > 0:
                     P(self._set_status, i18n.tr(
@@ -1046,11 +1211,12 @@ class App(ctk.CTk):
 
                 ok = sync.sync_all(
                     host, port, manifest, mc_dir,
-                    is_host=cfg["is_host"],
-                    server_mods_dir=cfg["server_mods_dir"],
+                    is_host=cfg.get("is_host", False),
+                    server_mods_dir=cfg.get("server_mods_dir", ""),
                     on_progress=lambda f: P(self._set_progress, 0.05 + f * 0.40),
                     on_status=lambda s: P(self._set_status, s),
                     lang=lang,
+                    cfg=cfg,
                 )
                 if not ok:
                     log.warning("синхронизация прошла не полностью")
@@ -1070,7 +1236,7 @@ class App(ctk.CTk):
             P(self._set_progress, 0.95)
             srv = manifest.get("server") or {}
             client_folder = manifest.get("client_folder", "")
-            game_dir = cfgmod.resolve_game_dir(mc_dir, client_folder)
+            game_dir = cfgmod.resolve_game_dir(mc_dir, client_folder, cfg=cfg, manifest=manifest)
             log_path = cfgmod.config_dir() / "game.log"
             start_time = time.time()
             ram_mb = cfgmod.effective_ram_mb(cfg)
@@ -1083,11 +1249,14 @@ class App(ctk.CTk):
                 server_java_version=manifest.get("java_version"),
                 auto_join=bool(srv.get("auto_join", True)),
                 client_folder=client_folder,
+                manifest=manifest,
             )
 
             def _on_game_ready():
                 P(self._set_progress, 1.0)
                 P(self._set_status, i18n.tr(lang, "status_game_ready"))
+                # Update play button to show running state
+                P(self._on_game_started)
 
             rc, timed_out = mc.monitor_launch(
                 proc, log_path,
@@ -1110,6 +1279,51 @@ class App(ctk.CTk):
             P(self._set_progress, 0.0)
         finally:
             P(self._play_done)
+
+    def _on_game_started(self):
+        """Called when game window is detected - update UI for running state."""
+        try:
+            # Keep button in hover color (accent_hover)
+            self._play_hover_t = 1.0
+            self._paint_play_button_color()
+            # Change button text to "GAME RUNNING"
+            self.play_btn.configure(text=self._tr("play_btn_running"), state="disabled")
+            # Hide progress bar
+            self._show_progress_bar(False)
+            # Show running status
+            self._set_status(self._tr("status_game_ready"))
+            # Apply on_launch_action
+            action = self.cfg.get("on_launch_action", "keep")
+            if action == "minimize":
+                self.iconify()
+            elif action == "hide":
+                self.withdraw()
+        except Exception:
+            pass
+
+    def _restore_window_if_hidden(self):
+        """Restore window if it was hidden/minimized per on_launch_action."""
+        try:
+            action = self.cfg.get("on_launch_action", "keep")
+            if action in ("minimize", "hide"):
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+        except Exception:
+            pass
+
+    def _play_done(self):
+        self.playing = False
+        self._show_progress_bar(False)
+        self._restore_window_if_hidden()
+        try:
+            self.play_btn.configure(state="normal")
+            self._play_hover_t = 0.0
+            self._paint_play_button_color()
+            self._set_play_text(self._tr("play_btn"))
+        except Exception:
+            pass
+        self.refresh_download_plan(manual=False)
 
     # ============================================================ БЫСТРОЕ ОТКРЫТИЕ ПАПОК (#16)
     def _open_folders_dialog(self):
@@ -1172,7 +1386,7 @@ class App(ctk.CTk):
 
     # ============================================================ ШПАРГАЛКА ХОТКЕЕВ
     def _open_hotkeys_dialog(self):
-        dlg = self._make_dialog(self._tr("hk_title"), width=540, height=420, min_w=500, min_h=390)
+        dlg = self._make_dialog(self._tr("hk_title"), width=540, height=440, min_w=500, min_h=410)
         card = self.frame(dlg, "panel", corner_radius=16)
         card.pack(fill="both", expand=True, padx=18, pady=18)
 
@@ -1182,6 +1396,7 @@ class App(ctk.CTk):
         self.label(card, self._tr("hk_heading"), 20, True).pack(anchor="w", padx=22, pady=(16, 12))
         shortcuts = [
             ("Enter / Ctrl + P", self._tr("hk_play")),
+            ("R / К", self._tr("hk_random_greet")),
             ("F5 / Ctrl + R", self._tr("hk_refresh")),
             ("Ctrl + O", self._tr("hk_folders")),
             ("Ctrl + L", self._tr("hk_log")),
@@ -1613,6 +1828,30 @@ class App(ctk.CTk):
                 row=r, column=0, sticky="w", pady=6, padx=(0, 16)
             )
 
+        def _disable_scroll_on_slider(sl):
+            """Disable mouse wheel scrolling on CTkSlider."""
+            try:
+                canvas = getattr(sl, "_canvas", None)
+                if canvas:
+                    canvas.unbind("<MouseWheel>")
+                    canvas.unbind("<Button-4>")
+                    canvas.unbind("<Button-5>")
+                    sl._mouse_scroll_event = lambda *_a, **_kw: None
+            except Exception:
+                pass
+
+        def _disable_scroll_on_option_menu(om):
+            """Disable mouse wheel scrolling on CTkOptionMenu."""
+            try:
+                canvas = getattr(om, "_canvas", None)
+                if canvas:
+                    canvas.unbind("<MouseWheel>")
+                    canvas.unbind("<Button-4>")
+                    canvas.unbind("<Button-5>")
+                    om._mouse_scroll_event = lambda *_a, **_kw: None
+            except Exception:
+                pass
+
         # --- Секция 1: Язык, профиль и мульти-серверы ---
         section(0, self._tr("st_sec_profile"))
 
@@ -1623,6 +1862,7 @@ class App(ctk.CTk):
         om_lang = self.option_menu(g, values=["Русский", "English"], width=230)
         om_lang.set(lang_labels[self._lang()])
         om_lang.grid(row=1, column=1, sticky="w", pady=4)
+        _disable_scroll_on_option_menu(om_lang)
 
         # Ник (#14)
         row_lbl(2, self._tr("st_nick"))
@@ -1635,6 +1875,7 @@ class App(ctk.CTk):
         om_theme = self.option_menu(g, values=themes.THEME_NAMES, width=230)
         om_theme.set(c["theme"])
         om_theme.grid(row=3, column=1, sticky="w", pady=4)
+        _disable_scroll_on_option_menu(om_theme)
 
         # Мульти-серверы (#12)
         row_lbl(4, self._tr("st_active_server"))
@@ -1644,6 +1885,7 @@ class App(ctk.CTk):
         srv_label_map = {}  # display_label -> server_dict
         om_servers = self.option_menu(srv_bar, values=["—"], width=300)
         om_servers.pack(side="left")
+        _disable_scroll_on_option_menu(om_servers)
 
         btn_add_srv = self.button(srv_bar, self._tr("st_srv_add"), primary=False, width=120, height=32)
         btn_add_srv.pack(side="left", padx=(8, 6))
@@ -1651,7 +1893,7 @@ class App(ctk.CTk):
         btn_del_srv.pack(side="left")
 
         row_lbl(5, self._tr("st_srv_addr"))
-        e_host = self.entry(g, height=34, placeholder_text="26.12.34.56")
+        e_host = self.entry(g, height=34, placeholder_text="26.12.34.56 или play.host.ru")
         e_host.insert(0, self._addr_text())
         e_host.grid(row=5, column=1, sticky="ew", pady=4)
         m_host = self.label(g, "", 12, color="subtext")
@@ -1730,42 +1972,59 @@ class App(ctk.CTk):
 
         find_btn.configure(command=lambda: self._autofind(e_host, m_host, find_btn, on_found=on_found_in_settings))
 
-        # Режим хоста
+        # Режим хоста + папка модов сервера (с валидацией уникальности)
         row_lbl(7, self._tr("st_host_mode"))
         sw_host = ctk.CTkSwitch(g, text=self._tr("st_host_switch"))
         self.T(sw_host, fg_color="surface_hover", progress_color="accent", button_color="text",
                button_hover_color="accent_hover", text_color="text")
         sw_host.grid(row=7, column=1, columnspan=2, sticky="w", pady=4)
 
-        row_lbl(8, self._tr("st_srv_mods_dir"))
+        # Папка сборки сервера (переименование/сброс)
+        row_lbl(8, self._tr("st_srv_folder"))
+        srv_folder_box = self.frame(g, "panel")
+        srv_folder_box.grid(row=8, column=1, columnspan=2, sticky="ew", pady=4)
+        active_s = cfgmod.active_server(c)
+        client_folder = (active_s or {}).get("client_folder", "")
+        if client_folder:
+            e_srv_folder = self.entry(srv_folder_box, height=34)
+            e_srv_folder.insert(0, client_folder)
+            e_srv_folder.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            btn_rename = self.button(srv_folder_box, self._tr("st_srv_folder_rename"), primary=False, width=120, height=34)
+            btn_rename.pack(side="left", padx=(0, 4))
+            btn_reset = self.button(srv_folder_box, self._tr("st_srv_folder_reset"), primary=False, width=80, height=34)
+            btn_reset.pack(side="left")
+        else:
+            self.label(srv_folder_box, self._tr("st_srv_folder_root"), 13, color="subtext").pack(side="left")
+
+        row_lbl(9, self._tr("st_srv_mods_dir"))
         e_srv = self.entry(g, height=34, placeholder_text=self._tr("st_srv_mods_ph"))
         e_srv.insert(0, c["server_mods_dir"])
-        e_srv.grid(row=8, column=1, sticky="ew", pady=4)
+        e_srv.grid(row=9, column=1, sticky="ew", pady=4)
         b_srv = self.button(
             g, self._tr("st_browse"),
             lambda: self._browse_dir(e_srv, on_change=autosave_now),
             primary=False, width=125, height=34,
         )
-        b_srv.grid(row=8, column=2, padx=(8, 0))
+        b_srv.grid(row=9, column=2, padx=(8, 0))
 
         # --- Секция 2: Память (RAM), Java и JVM-аргументы ---
-        section(9, self._tr("st_sec_java"))
+        section(10, self._tr("st_sec_java"))
 
         sys_ram = cfgmod.system_ram_mb()
         rec_ram = cfgmod.recommended_ram_mb(sys_ram)
         max_ram = cfgmod.max_selectable_ram_mb()
 
-        row_lbl(10, self._tr("st_autoram"))
+        row_lbl(11, self._tr("st_autoram"))
         sw_autoram = ctk.CTkSwitch(
             g, text=self._tr("st_autoram_switch", rec=rec_ram, total=sys_ram),
         )
         self.T(sw_autoram, fg_color="surface_hover", progress_color="accent", button_color="text",
                button_hover_color="accent_hover", text_color="text")
-        sw_autoram.grid(row=10, column=1, columnspan=2, sticky="w", pady=4)
+        sw_autoram.grid(row=11, column=1, columnspan=2, sticky="w", pady=4)
 
-        row_lbl(11, self._tr("st_manual_ram"))
+        row_lbl(12, self._tr("st_manual_ram"))
         ram_box = self.frame(g, "panel")
-        ram_box.grid(row=11, column=1, columnspan=2, sticky="ew", pady=4)
+        ram_box.grid(row=12, column=1, columnspan=2, sticky="ew", pady=4)
         e_ram = self.entry(ram_box, width=86, height=32)
         init_ram = min(max_ram, max(1024, int(c.get("ram_mb", rec_ram))))
         e_ram.insert(0, str(init_ram))
@@ -1787,36 +2046,38 @@ class App(ctk.CTk):
                button_hover_color="accent_hover")
         sl_ram.set(init_ram)
         sl_ram.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        _disable_scroll_on_slider(sl_ram)
 
-        # #20 + #21: Выбор режима Java через чистый CTkOptionMenu (без артефактов SegmentedButton)
-        # и список найденных Java с dynamic_resizing=False + кнопка в фиксированной колонке 2!
-        row_lbl(12, self._tr("st_java_mode"))
+        # Java режим
+        row_lbl(13, self._tr("st_java_mode"))
         lbl_java_auto = self._tr("java_mode_auto")
         lbl_java_manual = self._tr("java_mode_manual")
         om_java_mode = self.option_menu(g, values=[lbl_java_auto, lbl_java_manual], width=250)
         om_java_mode.set(lbl_java_manual if c.get("java_mode") == "manual" else lbl_java_auto)
-        om_java_mode.grid(row=12, column=1, sticky="w", pady=4)
+        om_java_mode.grid(row=13, column=1, sticky="w", pady=4)
+        _disable_scroll_on_option_menu(om_java_mode)
 
-        row_lbl(13, self._tr("st_java_detected"))
-        detected_map = {}  # display_label -> full_path
+        row_lbl(14, self._tr("st_java_detected"))
+        detected_map = {}
         om_detected = self.option_menu(g, values=[self._tr("java_detect_placeholder")])
-        om_detected.grid(row=13, column=1, sticky="ew", pady=4)
+        om_detected.grid(row=14, column=1, sticky="ew", pady=4)
+        _disable_scroll_on_option_menu(om_detected)
         btn_scan_java = self.button(g, self._tr("st_detect_java_btn"), primary=False, width=125, height=34)
-        btn_scan_java.grid(row=13, column=2, padx=(8, 0))
+        btn_scan_java.grid(row=14, column=2, padx=(8, 0))
 
-        row_lbl(14, self._tr("st_java_path"))
+        row_lbl(15, self._tr("st_java_path"))
         e_java = self.entry(g, height=34, placeholder_text=self._tr("st_java_path_ph"))
         e_java.insert(0, c.get("java_path", ""))
-        e_java.grid(row=14, column=1, sticky="ew", pady=4)
+        e_java.grid(row=15, column=1, sticky="ew", pady=4)
         b_java = self.button(
             g, self._tr("st_browse"),
             command=lambda: self._browse_file(e_java, on_change=lambda: (check_java_entry(), autosave_now())),
             primary=False, width=125, height=34,
         )
-        b_java.grid(row=14, column=2, padx=(8, 0))
+        b_java.grid(row=15, column=2, padx=(8, 0))
 
         java_info_lbl = self.label(g, "", 12, color="subtext", wraplength=540)
-        java_info_lbl.grid(row=15, column=1, columnspan=2, sticky="w")
+        java_info_lbl.grid(row=16, column=1, columnspan=2, sticky="w")
 
         def check_java_entry(*_a):
             if om_java_mode.get() != lbl_java_manual:
@@ -1892,9 +2153,9 @@ class App(ctk.CTk):
         btn_scan_java.configure(command=run_java_scan)
 
         # JVM-пресеты
-        row_lbl(16, self._tr("st_jvm_preset"))
+        row_lbl(17, self._tr("st_jvm_preset"))
         preset_row = self.frame(g, "panel")
-        preset_row.grid(row=16, column=1, columnspan=2, sticky="ew", pady=4)
+        preset_row.grid(row=17, column=1, columnspan=2, sticky="ew", pady=4)
 
         def current_preset_names():
             m = dict(jvm.BUILTIN_PRESETS)
@@ -1910,6 +2171,7 @@ class App(ctk.CTk):
             command=lambda _v: autosave_now(),
         )
         om_preset.pack(side="left")
+        _disable_scroll_on_option_menu(om_preset)
 
         def refresh_presets(selected_name):
             vals = current_preset_names()
@@ -1923,26 +2185,95 @@ class App(ctk.CTk):
             primary=False, width=230, height=32,
         ).pack(side="left", padx=(10, 0))
 
-        row_lbl(17, self._tr("st_extra_jvm"))
+        row_lbl(18, self._tr("st_extra_jvm"))
         e_extra_jvm = self.entry(g, height=34, placeholder_text=self._tr("st_extra_jvm_ph"))
         e_extra_jvm.insert(0, c.get("extra_jvm_args", ""))
-        e_extra_jvm.grid(row=17, column=1, columnspan=2, sticky="ew", pady=4)
+        e_extra_jvm.grid(row=18, column=1, columnspan=2, sticky="ew", pady=4)
 
-        # --- Секция 3: Окно игры, папки и таймаут ---
-        section(18, self._tr("st_sec_window"))
+        # --- Секция 3: Папки версий, окно игры и поведение ---
+        section(19, self._tr("st_sec_window"))
 
-        row_lbl(19, self._tr("st_mc_dir"))
+        row_lbl(20, self._tr("st_mc_dir"))
         e_mc = self.entry(g, height=34)
         e_mc.insert(0, str(mc.find_minecraft_dir(c.get("mc_dir", ""))))
-        e_mc.grid(row=19, column=1, sticky="ew", pady=4)
+        e_mc.grid(row=20, column=1, sticky="ew", pady=4)
         self.button(
             g, self._tr("st_browse"),
             lambda: self._browse_dir(e_mc, on_change=autosave_now),
             primary=False, width=125, height=34,
-        ).grid(row=19, column=2, padx=(8, 0))
+        ).grid(row=20, column=2, padx=(8, 0))
 
-        # #21: Режим окна игры через CTkOptionMenu вместо CTkSegmentedButton
-        row_lbl(20, self._tr("st_win_mode"))
+        # Режим разделения версий (isolation_mode)
+        row_lbl(21, self._tr("st_isolation"))
+        iso_labels = {
+            "none": self._tr("iso_none"),
+            "family": self._tr("iso_family"),
+            "version": self._tr("iso_version"),
+        }
+        iso_rev = {v: k for k, v in iso_labels.items()}
+        om_iso = self.option_menu(g, values=list(iso_labels.values()), width=280)
+        om_iso.set(iso_labels.get(c.get("isolation_mode", "family"), iso_labels["family"]))
+        om_iso.grid(row=21, column=1, sticky="w", pady=4)
+        _disable_scroll_on_option_menu(om_iso)
+
+        # on_launch_action
+        row_lbl(22, self._tr("st_on_launch"))
+        launch_labels = {
+            "keep": self._tr("launch_keep"),
+            "minimize": self._tr("launch_minimize"),
+            "hide": self._tr("launch_hide"),
+        }
+        launch_rev = {v: k for k, v in launch_labels.items()}
+        om_launch = self.option_menu(g, values=list(launch_labels.values()), width=280)
+        om_launch.set(launch_labels.get(c.get("on_launch_action", "keep"), launch_labels["keep"]))
+        om_launch.grid(row=22, column=1, sticky="w", pady=4)
+        _disable_scroll_on_option_menu(om_launch)
+
+        # Server background toggle
+        row_lbl(23, self._tr("st_server_bg"))
+        use_bg = c.get("use_server_bg", True)
+        sw_bg = ctk.CTkSwitch(g, text=self._tr("st_server_bg_switch"))
+        self.T(sw_bg, fg_color="surface_hover", progress_color="accent", button_color="text",
+               button_hover_color="accent_hover", text_color="text")
+        if use_bg:
+            sw_bg.select()
+        sw_bg.grid(row=23, column=1, columnspan=2, sticky="w", pady=4)
+
+        # --- Linux: GameMode & MangoHud ---
+        import platform
+        if platform.system().lower() == "linux":
+            section(24, self._tr("st_sec_linux"))
+
+            # GameMode
+            row_lbl(25, self._tr("st_gamemode"))
+            has_gm = mc.has_gamemode()
+            sw_gm = ctk.CTkSwitch(g, text=self._tr("st_gamemode_on" if has_gm else "st_gamemode_off"))
+            self.T(sw_gm, fg_color="surface_hover", progress_color="accent", button_color="text",
+                   button_hover_color="accent_hover", text_color="text")
+            if not has_gm:
+                sw_gm.configure(state="disabled")
+            if c.get("use_gamemode", False) and has_gm:
+                sw_gm.select()
+            sw_gm.grid(row=25, column=1, columnspan=2, sticky="w", pady=4)
+
+            # MangoHud
+            row_lbl(26, self._tr("st_mangohud"))
+            has_mh = mc.has_mangohud()
+            sw_mh = ctk.CTkSwitch(g, text=self._tr("st_mangohud_on" if has_mh else "st_mangohud_off"))
+            self.T(sw_mh, fg_color="surface_hover", progress_color="accent", button_color="text",
+                   button_hover_color="accent_hover", text_color="text")
+            if not has_mh:
+                sw_mh.configure(state="disabled")
+            if c.get("use_mangohud", False) and has_mh:
+                sw_mh.select()
+            sw_mh.grid(row=26, column=1, columnspan=2, sticky="w", pady=4)
+
+            linux_section_end = 26
+        else:
+            linux_section_end = 23
+
+        # Режим окна игры
+        row_lbl(linux_section_end + 1, self._tr("st_win_mode"))
         wm_labels = {
             "default": self._tr("win_default"),
             "fullscreen": self._tr("win_fullscreen"),
@@ -1951,11 +2282,12 @@ class App(ctk.CTk):
         wm_rev = {v: k for k, v in wm_labels.items()}
         om_win = self.option_menu(g, values=list(wm_labels.values()), width=230)
         om_win.set(wm_labels.get(c.get("window_mode", "default"), wm_labels["default"]))
-        om_win.grid(row=20, column=1, sticky="w", pady=4)
+        om_win.grid(row=linux_section_end + 1, column=1, sticky="w", pady=4)
+        _disable_scroll_on_option_menu(om_win)
 
-        row_lbl(21, self._tr("st_win_size"))
+        row_lbl(linux_section_end + 2, self._tr("st_win_size"))
         res_row = self.frame(g, "panel")
-        res_row.grid(row=21, column=1, columnspan=2, sticky="w", pady=4)
+        res_row.grid(row=linux_section_end + 2, column=1, columnspan=2, sticky="w", pady=4)
         e_w = self.entry(res_row, width=78, height=32)
         e_w.insert(0, str(c.get("window_width", 1280)))
         e_w.pack(side="left")
@@ -1981,19 +2313,19 @@ class App(ctk.CTk):
                 font=ctk.CTkFont(size=11),
             ).pack(side="left", padx=2)
 
-        row_lbl(22, self._tr("st_timeout"))
+        row_lbl(linux_section_end + 3, self._tr("st_timeout"))
         to_row = self.frame(g, "panel")
-        to_row.grid(row=22, column=1, columnspan=2, sticky="w", pady=4)
+        to_row.grid(row=linux_section_end + 3, column=1, columnspan=2, sticky="w", pady=4)
         e_timeout = self.entry(to_row, width=86, height=32)
         e_timeout.insert(0, str(c.get("launch_timeout", 120)))
         e_timeout.pack(side="left")
         self.label(to_row, self._tr("st_timeout_hint"), 12, color="subtext").pack(
             side="left", padx=10)
 
-        # --- Секция 4: Выход из аккаунта и удаление серверов (#13) ---
-        section(23, self._tr("st_sec_account"))
+        # --- Секция 4: Выход из аккаунта и удаление конфигов ---
+        section(linux_section_end + 4, self._tr("st_sec_account"))
         acc_box = self.frame(g, "panel")
-        acc_box.grid(row=24, column=0, columnspan=3, sticky="ew", pady=(2, 8))
+        acc_box.grid(row=linux_section_end + 5, column=0, columnspan=3, sticky="ew", pady=(2, 8))
         self.label(acc_box, self._tr("st_signout_desc"), 12, color="subtext", wraplength=620).pack(
             anchor="w", pady=(0, 8))
         self.danger_button(
@@ -2003,10 +2335,70 @@ class App(ctk.CTk):
         ).pack(anchor="w")
 
         err = self.label(g, "", 13, color="danger", wraplength=680)
-        err.grid(row=25, column=0, columnspan=3, sticky="w", pady=(6, 4))
+        err.grid(row=linux_section_end + 6, column=0, columnspan=3, sticky="w", pady=(6, 4))
 
-        # --- Логика переключателей и автосохранения (#8) ---
+        # --- Логика переключателей и автосохранения ---
         ready_for_autosave = [False]
+
+        # Server folder rename/reset callbacks
+        def _on_rename_server_folder():
+            srv = cfgmod.active_server(c)
+            if not srv:
+                return
+            dlg = self._make_dialog(self._tr("ren_win_title"), width=520, height=280, min_w=480, min_h=260)
+            card_d = self.frame(dlg, "panel", corner_radius=16)
+            card_d.pack(fill="both", expand=True, padx=18, pady=18)
+            bar = self.frame(card_d, "panel")
+            bar.pack(side="bottom", fill="x", padx=22, pady=(10, 18))
+            self.label(card_d, self._tr("ren_heading"), 20, True).pack(anchor="w", padx=22, pady=(18, 4))
+            self.label(card_d, self._tr("ren_sub"), 12, color="subtext", wraplength=460).pack(anchor="w", padx=22, pady=(0, 14))
+            e_new = self.entry(card_d, height=36, placeholder_text=self._tr("ren_ph"))
+            e_new.insert(0, srv.get("client_folder", ""))
+            e_new.pack(fill="x", padx=22, pady=(0, 6))
+            msg_lbl = self.label(card_d, "", 12, color="subtext", wraplength=460)
+            msg_lbl.pack(anchor="w", padx=22)
+
+            def do_rename():
+                new_name = e_new.get().strip()
+                if not new_name:
+                    self.msg(msg_lbl, self._tr("ren_err_bad"), "danger")
+                    return
+                try:
+                    new_folder = cfgmod.rename_server_folder(c, srv["id"], new_name)
+                    cfgmod.save(c)
+                    # Refresh server list and manifest
+                    rebuild_servers_dropdown()
+                    self._last_manifest = cfgmod.load_cache(srv["id"])
+                    self.msg(autosave_lbl, self._tr("st_saved_ok"), "success")
+                    dlg.destroy()
+                except ValueError as ve:
+                    self.msg(msg_lbl, str(ve), "danger")
+                except Exception as ex:
+                    log.exception("rename failed")
+                    self.msg(msg_lbl, self._tr("ren_err_io"), "danger")
+
+            btn_ok = self.button(bar, self._tr("ren_confirm"), do_rename, width=165, height=38)
+            btn_ok.pack(side="right")
+            self.button(bar, self._tr("pe_cancel_btn"), dlg.destroy, primary=False, width=115, height=38).pack(side="right", padx=10)
+            dlg.after(100, e_new.focus_set)
+            e_new.bind("<Return>", lambda _e: do_rename())
+
+        def _on_reset_server_folder():
+            srv = cfgmod.active_server(c)
+            if not srv:
+                return
+            try:
+                new_folder = cfgmod.reset_server_folder(c, srv["id"])
+                cfgmod.save(c)
+                rebuild_servers_dropdown()
+                self._last_manifest = cfgmod.load_cache(srv["id"])
+                self.msg(autosave_lbl, self._tr("st_saved_ok"), "success")
+            except Exception as ex:
+                log.exception("reset folder failed")
+                self.msg(err, self._tr("ren_err_io"), "danger")
+
+        if 'btn_rename' in dir() and 'btn_reset' in dir():
+            pass  # handled inline above
 
         def toggle_host(save_after=True):
             st = "normal" if sw_host.get() else "disabled"
@@ -2072,27 +2464,32 @@ class App(ctk.CTk):
             if raw_addr:
                 parsed = parse_hostport(raw_addr)
                 if parsed:
-                    if not c.get("servers"):
-                        cfgmod.add_or_select_server(c, parsed[0], parsed[1])
-                        rebuild_servers_dropdown()
-                    else:
-                        cur_srv = cfgmod.active_server(c)
-                        if cur_srv and (cur_srv["host"], cur_srv["port"]) != parsed:
-                            cur_srv["host"], cur_srv["port"] = parsed
-                            cur_srv["id"] = cfgmod._server_id(parsed[0], parsed[1])
-                            c["active_server_id"] = cur_srv["id"]
-                            c["sync_host"], c["sync_port"] = parsed
-                            rebuild_servers_dropdown()
+                    # Use update_active_server_address to preserve server ID
+                    cfgmod.update_active_server_address(c, parsed[0], parsed[1])
+                    cfgmod.save(c)
+                    e_host.delete(0, "end")
+                    e_host.insert(0, self._addr_text(parsed[0], parsed[1]))
+                    rebuild_servers_dropdown()
                 else:
                     first_error = first_error or self._tr("st_err_addr")
 
-            # 4. Хост-режим
+            # 4. Хост-режим + уникальность папки
             host_on = bool(sw_host.get())
             srv_dir = e_srv.get().strip()
             if host_on:
                 if srv_dir and Path(srv_dir).is_dir():
-                    c["is_host"] = True
-                    c["server_mods_dir"] = srv_dir
+                    # Validate uniqueness against other servers
+                    active_id = c.get("active_server_id")
+                    ok, dup_name = cfgmod.validate_unique_host_dir(c, srv_dir, exclude_server_id=active_id)
+                    if not ok:
+                        first_error = first_error or self._tr("st_err_host_dup", srv=dup_name)
+                    else:
+                        # Check if this is the sync server's own folder
+                        if cfgmod.is_sync_server_own_mods_dir(c, srv_dir):
+                            first_error = first_error or self._tr("st_err_host_sync_own")
+                        else:
+                            c["is_host"] = True
+                            c["server_mods_dir"] = srv_dir
                 else:
                     first_error = first_error or self._tr("st_err_host_dir")
             else:
@@ -2126,10 +2523,25 @@ class App(ctk.CTk):
             c["custom_jvm_presets"] = dict(custom_presets_draft)
             c["extra_jvm_args"] = e_extra_jvm.get().strip()
 
-            # 8. Папка .minecraft, режим окна и таймаут
+            # 8. Папка .minecraft
             if e_mc.get().strip():
                 c["mc_dir"] = e_mc.get().strip()
 
+            # 9. isolation_mode
+            c["isolation_mode"] = iso_rev.get(om_iso.get(), "family")
+
+            # 10. on_launch_action
+            c["on_launch_action"] = launch_rev.get(om_launch.get(), "keep")
+
+            # 11. use_server_bg
+            c["use_server_bg"] = bool(sw_bg.get())
+
+            # 12. Linux: GameMode / MangoHud
+            if platform.system().lower() == "linux":
+                c["use_gamemode"] = bool(sw_gm.get()) if has_gm else False
+                c["use_mangohud"] = bool(sw_mh.get()) if has_mh else False
+
+            # 13. Режим окна и таймаут
             win_mode_val = wm_rev.get(om_win.get(), "default")
             c["window_mode"] = win_mode_val
             if win_mode_val == "custom":
@@ -2169,8 +2581,16 @@ class App(ctk.CTk):
         toggle_win_mode(save_after=False)
         om_win.configure(command=toggle_win_mode)
 
+        if platform.system().lower() == "linux":
+            pass  # toggles already initialized
+
         om_theme.configure(command=on_theme_change)
         om_lang.configure(command=on_lang_change)
+
+        # Bind rename/reset buttons
+        if client_folder:
+            btn_rename.configure(command=_on_rename_server_folder)
+            btn_reset.configure(command=_on_reset_server_folder)
 
         for ent in (e_nick, e_host, e_srv, e_ram, e_java, e_extra_jvm, e_mc, e_w, e_h, e_timeout):
             ent.bind("<KeyRelease>", autosave_now, add="+")

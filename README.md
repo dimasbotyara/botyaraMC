@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/banner.svg" alt="botyaraMC Banner" width="100%"/>
+<img src="assets/banner.en.svg" alt="botyaraMC Banner" width="100%"/>
 
 <br/>
 
@@ -8,7 +8,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Loaders](https://img.shields.io/badge/Loaders-Vanilla%20%7C%20Fabric%20%7C%20Forge%20%7C%20NeoForge%20%7C%20Quilt-cba6f7)](#-features)
 [![OS](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-89b4fa)](#-quick-start)
-[![Languages](https://img.shields.io/badge/Lang-EN%20%7C%20RU-f9e2af)](#️-bilingual-support--interactive-server-tui)
+[![Languages](https://img.shields.io/badge/Lang-EN%20%7C%20RU-f9e2af)](#-bilingual-support--interactive-server-tui)
 [![mclo.gs](https://img.shields.io/badge/Crash%20Sharing-mclo.gs-5cb85c)](https://mclo.gs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-a6e3a1.svg)](LICENSE)
 
@@ -51,32 +51,63 @@ No more sending 500 MB `.zip` archives over Discord or Telegram every time you a
 ### 📦 Smart Sync, Multi-Server & Mod Cloaking
 - **Upfront Download Size Preview** — Before launching, the Play button displays the exact remaining download size (e.g. `▶ PLAY • Download 45 MB`) along with live MB progress.
 - **Resumable Downloads (`HTTP Range`) & Per-IP Rate Limiting** — Interrupted transfers keep their `.part` state and resume from the exact byte via `206 Partial Content`, verified end-to-end with `SHA-256`. A sliding-window per-IP rate limiter (`rate_limit_per_min`, default `300/min`) protects the server and pairs with automatic `Retry-After` handling on the client.
-- **Multi-Server Profiles** — Add as many servers as you like in `⚙ Settings` (by IP or LAN auto-discovery) and switch between them in a single click right from the main screen.
-- **Isolated Instance Folders (`client_folder`)** — Hosts can configure a custom client folder name so the modpack lives cleanly inside `.minecraft/instances/<client_folder>` while sharing `versions/`, `libraries/`, `assets/`, and `runtime/` from base `.minecraft` without duplicating gigabytes on disk.
+- **Multi-Server Profiles** — Add as many servers as you like in `⚙ Settings` (by IP, domain, or LAN auto-discovery) and switch between them in a single click right from the main screen.
+- **Smart UDP Discovery** — When a server's IP changes, the launcher gracefully updates the selected server's address in place, never "hijacking" to a different server when multiple exist.
+- **Isolated Instance Folders (`client_folder`)** — Hosts can configure a custom client folder name so the modpack lives cleanly inside `.minecraft/home/` with your chosen isolation mode (`family` → `Fabric-1.16`, `version` → `Fabric 1.16.5`), while sharing `versions/`, `libraries/`, `assets/`, and `runtime/` from base `.minecraft` without duplicating gigabytes on disk.
+- **Rename Pack Folder in Launcher** — Don't like the folder name? In `⚙ Settings` you can rename a server's pack folder (worlds, mods, settings move automatically) or reset to auto-name — all without manual copying.
+- **Per-Server Manifest Caches** — Each server has its own isolated cache (`manifest_cache_<id>.json`), switching between servers is instant and conflict-free.
 - **Server-Side Mod Obfuscation (`hide_mods`)** — Keep secret content or technical mods hidden by cloaking `.jar` filenames on the fly using random word slugs (`silent-amber-otter-42.jar`) or salted HMAC hashes (`mod_7f3a9c12e4b08d51.jar`), globally or selectively. Direct requests to original filenames return `404`.
 - **Offline Fallback** — If the sync server is temporarily offline, Minecraft still launches seamlessly from the selected server's cached manifest.
+- **Non-Destructive `delete_user_mods`** — When enabled, extra `.jar` files are safely moved to `mods/old-mods/` instead of being deleted.
 
-### 🎛️ Bilingual Support (`EN` / `RU`) & Interactive Server TUI
-- **Full English & Russian Localization** — Language selection is the **very first step** of the launcher setup wizard (before nickname entry) and switches live in `⚙ Settings`. Server `config.txt` comments, console logs, and the TUI configurator are localized too.
-- **Interactive `questionary` TUI (`server/tui.py`)** — Configure every server setting via arrow-key terminal menus, pick selective `.jar` files to cloak via checkboxes, or run step-by-step `--wizard` mode with instant auto-save.
+### 🌐 Domain Addresses & Auto MC-Server Resolution
+- **Hosting Domains + IDN + `:port`** — In both launcher settings and server TUI, you can specify not just numeric IPs but also domains (`play.example.com:25456`) or internationalized domains (`мой-сервер.рф`).
+- **`minecraft_server = "auto"` on Server** — In `config.txt`, set `minecraft_server = "auto"` and the Python server will automatically use the sync client's address (handy when both sync and MC server run on the same machine).
+
+### 🎨 Custom Server Background
+- **Server Background in Launcher** — The host drops `background.png` / `.jpg` / `.jpeg` / `.webp` into the `server/` root — the image is served via `/background`, cached by `SHA-256`, and beautifully rendered on the launcher's main screen (toggleable in `⚙ Settings`).
+
+### 👑 Host Mode — Unique Folders & Safe Coexistence
+- **Mandatory Unique Folders** — The "I'm the host" setting requires selecting a Minecraft server mods folder that **does not clash** with any other saved server's folder (reusing a folder is allowed if it was deleted on disk or the server was removed).
+- **Sync Server Self-Protection** — The launcher refuses to let you accidentally pick the Python sync server's own serving folder as `server_mods_dir`.
+- **Python Host Playing via Launcher** — Fully supported: sync mods to the MC server folder, then play yourself through the launcher — no conflicts.
+
+### 📁 Version Isolation Modes
+| Mode | Path | Description |
+|------|------|-------------|
+| **No separate folders** | `.minecraft` | Classic shared folder, all versions together |
+| **Per family** | `home/Fabric-1.16` | Shared folder per major version (1.16, 1.20, …) |
+| **Per version** | `home/Fabric 1.16.5` | Separate folder per exact version (like MultiMC/PolyMC) |
+
+Each folder gets a `botyaramc.json` marker — if you rename the folder in Explorer/Dolphin, the launcher detects it and won't break.
+
+### 🐧 Linux: GameMode & MangoHud
+- **Feral GameMode (`gamemoderun`)** — Separate toggle in Settings (Linux only), verifies binary presence via `shutil.which`.
+- **MangoHud (`mangohud`)** — Separate toggle for FPS overlay, also with install check.
+- Work independently — enable both, one, or neither.
+
+### 🖥️ Cozy Desktop UX & Crash Diagnostics
+- **Time-of-Day Dynamic Greetings** — 240 warm, non-repetitive greetings tailored to morning, afternoon, evening, and night (English & Russian) that auto-rotate every 10 minutes while the launcher is open. Press **`R`** on the main screen to randomize instantly!
+- **Thoughtful UX Details**:
+  - **5 instant live themes** recoloring every widget without restart;
+  - **Smooth animated color transitions** on the `▶ PLAY` button on hover/leave;
+  - **Perfectly centered main screen** — the hero block (`botyaraMC`, greeting, `▶ PLAY`) is anchored at true center (vertically & horizontally); progress/status live in a separate lower container;
+  - **Top bar symmetry** — `Auto-RAM: ... • 🌐 <Server Name>` aligned at 34 px height with top-right buttons; JVM preset name removed, showing selected server name instead;
+  - **`▶ PLAY` stays in hover color** (`accent_hover`) while game runs, text changes to `🎮 GAME RUNNING` / `🎮 ИГРА ЗАПУЩЕНА`;
+  - **Window behavior on launch** — `Keep open` / `Minimize` / `Hide until game exits` (with auto-restore);
+  - **Live Minecraft Server Ping** — badge `🟢 Online: X/Y • Z ms` / `⚪ Minecraft server is currently offline` updates every 10 seconds;
+  - **Instant Settings auto-save** with no Save/Cancel bar;
+  - **No mouse-scroll value changes** on any Settings widget (sliders, dropdowns, etc.);
+  - **Strict nickname validation** (`3–16` chars, `a-z`, `A-Z`, `0-9`, `_` only);
+  - **Sign Out & Full Config Wipe** — `🚪 Sign out of botyaraMC & remove servers` deletes `~/.config/botyaraMC` (Linux) / `%APPDATA%\botyaraMC` (Windows) / `~/Library/Application Support/botyaraMC` (macOS) entirely, returning to the setup wizard.
+- **Quick Folder Opener (`📂 Folders`)** — One-click (or `1–7` keys) access to the active instance folder, `mods`, `resourcepacks`, `screenshots`, `crash-reports`, and launcher config/logs.
+- **Startup Watchdog Timeout** — Detects frozen launches if LWJGL/OpenAL fails to initialize within the configured timeout and terminates hung processes cleanly.
+- **Built-in Crash Report Parser + [mclo.gs](https://mclo.gs/) Sharing** — Analyzes `game.log`, `crash-reports/crash-*.txt`, and `hs_err_pid*.log` (`OutOfMemoryError`, Java version mismatches, Fabric/Forge mod conflicts, Mixin errors, OpenGL/GPU driver crashes) and opens a full log viewer with **Copy**, **Share (mclo.gs)** (with automatic OS username & token scrubbing), **Retry launch**, and **Close**.
 
 ### ☕ Java, Memory & JVM Tuning
 - **Java Auto-Detection & Manual Override** — Scans Windows, macOS, and Linux for installed JDKs/JREs (Temurin/Adoptium, Zulu, Liberica, GraalVM, Corretto, Oracle, OpenJDK, Mojang Runtimes) with concise vendor-aware labels (`Java 21 • Temurin (21.0.4)`), honors server `java_version` requirements, or downloads the official Mojang runtime automatically.
 - **JVM Presets & Custom Flags Editor** — Built-in **`G1GC`**, **`Aikar's Flags`**, **`ZGC`** (auto-enables `-XX:+ZGenerational` on Java 21–22 and safely falls back to G1GC on Java < 17), and **`Minimal`**, plus a custom preset editor and extra JVM flags input.
 - **Auto-RAM & Manual Slider** — Smart system memory calculation via `psutil` for low GC pause times, or manual MB slider + exact numeric input.
-
-### 🖥️ Cozy Desktop UX & Crash Diagnostics
-- **Time-of-Day Dynamic Greetings** — 240 warm, non-repetitive greetings tailored to morning, afternoon, evening, and night (in English & Russian) that automatically rotate every 10 minutes while the launcher is open.
-- **Thoughtful UX Details**:
-  - **5 instant live themes** recoloring every widget without restarting;
-  - **smooth animated color transitions** on the `▶ PLAY` button on mouse hover/leave;
-  - **clean idle main screen** — the progress bar stays hidden until a launch is in progress;
-  - **instant Settings auto-save** with no clunky Save/Cancel bar;
-  - **strict nickname validation** (`3–16` characters, `a-z`, `A-Z`, `0-9`, and `_` only);
-  - **one-click Sign Out & Server Reset** (preserving all Minecraft files and worlds on disk).
-- **Quick Folder Opener (`📂 Folders`)** — One-click (or `1–7` number keys) access to the active instance folder, `mods`, `resourcepacks`, `screenshots`, `crash-reports`, and launcher config/logs.
-- **Startup Watchdog Timeout** — Detects frozen launches if LWJGL/OpenAL fails to initialize within the configured timeout and terminates hung processes cleanly.
-- **Built-in Crash Report Parser + [mclo.gs](https://mclo.gs/) Sharing** — Analyzes `game.log`, `crash-reports/crash-*.txt`, and `hs_err_pid*.log` (`OutOfMemoryError`, Java version mismatches, Fabric/Forge mod conflicts, Mixin errors, OpenGL/GPU driver crashes) and opens a full log viewer with **Copy**, **Share (mclo.gs)** (with automatic OS username & token scrubbing), **Retry launch**, and **Close**.
 
 ---
 
@@ -84,47 +115,55 @@ No more sending 500 MB `.zip` archives over Discord or Telegram every time you a
 
 `botyaraMC` is designed to **never accidentally wipe** a player's personal files or re-download mods unnecessarily:
 
-1. **First Sync on a Non-Empty Folder (`mods/old-mods/`)**  
+1. **First Sync on a Non-Empty Folder (`mods/old-mods/`)**
    If `mods/` already contains pre-existing mods, `.disabled` files, or subfolders before `botyaraMC`'s very first sync, everything inside is safely moved into `mods/old-mods/`. Nothing is lost.
-2. **Zero-Download Server Switching (`mods/botyaraMC/`)**  
+2. **Zero-Download Server Switching (`mods/botyaraMC/`)**
    When switching from Server A to Server B, `botyaraMC`-installed mods from Server A aren't deleted — they are stashed inside `mods/botyaraMC/`. Switching back to Server A restores matching `SHA-256` jars instantly (`0 B` downloaded!).
-3. **Personal Client Mods (`delete_user_mods`)**  
-   - With `delete_user_mods = false` *(default)*, players can freely add client-side QoL mods (minimap, shaders) without `botyaraMC` touching them.  
-   - With `delete_user_mods = true`, the server enforces a strict modpack and removes extra unmanaged `.jar` files from `mods/`.
-4. **Resourcepacks (`resourcepacks/`)**  
-   Always synced in **add-only** mode — existing user resourcepacks are never overwritten or deleted.
+3. **Personal Client Mods (`delete_user_mods`)**
+   - With `delete_user_mods = false` *(default)*, players can freely add client-side QoL mods (minimap, shaders) without `botyaraMC` touching them.
+   - With `delete_user_mods = true`, the server enforces a strict modpack and extra unmanaged `.jar` files are safely moved to `mods/old-mods/`.
+4. **Resourcepacks (`resourcepacks/`)**
+   Always synced in **add-only** mode — existing user resourcepacks are never overwritten or deleted. Server resourcepack updates happen via `SHA-256` comparison, and new ones are auto-enabled in `options.txt` once.
 
 ---
 
 ## 🗂 Repository Structure
 
-```text
+```
 botyaraMC/
+├── server/                    # Python sync server (host)
+│   ├── server.py              # HTTP server (manifest, files, Range, rate-limit, /background)
+│   ├── mods_index.py          # Scanning mods/ & resourcepacks/, mod cloaking, background
+│   ├── srv_config.py          # Server config (config.txt) + TUI utilities
+│   ├── tui.py                 # Interactive configurator (questionary)
+│   ├── discovery.py           # UDP server announcement in LAN/VPN
+│   └── requirements.txt       # aiohttp, psutil, questionary, Pillow
+│
+├── launcher/                  # Launcher (GUI + CLI)
+│   ├── main.py                # Entry point
+│   ├── cli.py                 # CLI mode (python main.py --play ...)
+│   ├── ui.py                  # GUI on CustomTkinter (wizard, main, settings, dialogs)
+│   ├── config.py              # Launcher config, multi-server, folders, botyaramc.json markers
+│   ├── sync.py                # HTTP client, smart download, SHA-256, old-mods/, background cache
+│   ├── mc.py                  # .minecraft finder, version install, MC ping, GameMode, MangoHud, launch
+│   ├── discovery.py           # UDP sync server discovery (discover_all + match_discovered_server)
+│   ├── jvm.py                 # Java detection, JVM presets (G1GC, Aikar, ZGC, Custom)
+│   ├── crash.py               # Crash parser + mclo.gs upload
+│   ├── themes.py              # 5 live themes (Catppuccin Mocha/Latte, Gruvbox, Ayu, Monokai)
+│   ├── i18n.py                # RU/EN localization, time-of-day greetings, nickname validation
+│   ├── requirements.txt       # customtkinter, minecraft-launcher-lib, psutil, Pillow, pytest
+│   └── icon.ico / icon.png    # App icons
+│
+├── tests/
+│   └── test_botyaramc.py      # Comprehensive tests (10 tests, cover everything)
+│
 ├── assets/
-│   ├── banner.svg / banner.png       # English banner (SVG + PNG 1200×360)
-│   ├── banner.ru.svg / banner.ru.png # Russian banner (SVG + PNG 1200×360)
-│   ├── icon.svg / icon.png / icon.ico# Window & taskbar icons (SVG, PNG & multi-size .ico)
-│   └── icon_1080p.png                # High-resolution 1080p icon (1080×1080)
-├── server/                           # Runs on the host machine
-│   ├── server.py                     # Multi-threaded HTTP server (HTTP Range 206 + Rate Limiter, pure stdlib!)
-│   ├── tui.py                        # Interactive questionary TUI configurator
-│   ├── srv_config.py                 # Localized config.txt (EN/RU) with live reload
-│   ├── mods_index.py                 # SHA-256 indexer + words/hash mod filename obfuscator
-│   ├── discovery.py                  # UDP broadcast responder (LAN & Radmin VPN)
-│   ├── requirements.txt              # questionary (needed only for tui.py)
-│   ├── mods/                         # Drop server/modpack .jar files here
-│   └── resourcepacks/                # Drop .zip resourcepacks here
-├── launcher/                         # Distributed to players
-│   ├── main.py                       # Entry point (routes to GUI or zero-Tk CLI)
-│   ├── ui.py / themes.py             # CustomTkinter UI, multi-server profiles, auto-save & themes
-│   ├── i18n.py                       # EN/RU translations, 240 time-of-day greetings & strict nick validator
-│   ├── sync.py                       # old-mods, mods/botyaraMC stash, HTTP Range resume & SHA-256 sync
-│   ├── mc.py / jvm.py                # Version/loader installer, auto-join, Java scanner & JVM presets
-│   ├── crash.py                      # Crash analyzer (EN/RU) & mclo.gs v1 JSON API client
-│   ├── cli.py / config.py / discovery.py
-│   └── requirements.txt
-└── tests/
-    └── test_botyaramc.py             # Comprehensive pytest suite (Server + TUI + Sync + CLI + GUI)
+│   ├── banner.en.svg / .png   # English banner ("Smart Download")
+│   └── banner.ru.svg / .png   # Russian banner ("Умная докачка")
+│
+├── README.md                  # English documentation (this file)
+├── README.ru.md               # Russian documentation
+└── LICENSE
 ```
 
 ---
@@ -133,47 +172,31 @@ botyaraMC/
 
 ### 1. Sync Server (Host)
 
-`server.py` runs on pure **Python 3.10+** standard library with zero external dependencies. Install `questionary` if you want the interactive terminal configurator:
-
 ```bash
 cd server
-pip install -r requirements.txt   # optional, for interactive tui.py
+pip install -r requirements.txt
 
-# Option A — configure the server interactively in your terminal:
-python tui.py                     # arrow-key menu (or `python tui.py --wizard` for step-by-step setup)
+# Interactive (recommended):
+python tui.py          # full menu
+python tui.py --wizard # step-by-step wizard
 
-# Option B — start the server right away (auto-generates config.txt, mods/ and resourcepacks/ on first run):
-python server.py
+# Or edit config.txt manually:
+# minecraft_server = "auto"           # or MC server IP/domain (play.example.com:25565)
+# serve_background = true             # serve background.png via /background
+# sync_port = 25456
+# rate_limit_per_min = 300
+# hide_mods = "words"                 # "words" | "hash" | "[]" | list of files
+# salt = "super-secret"               # salt for hash mode
+# auto_join = true
 ```
 
-Checklist for the host:
-- Place modpack `.jar` files in `server/mods/` and `.zip` packs in `server/resourcepacks/`.
-- Allow **TCP `25456`** (HTTP manifest & file sync) and **UDP `25457`** (LAN / VPN auto-discovery) in your firewall.
-- Set `online-mode=false` in your Minecraft server's `server.properties` (since players connect with offline nicknames).
+**Important:** place `.jar` mods in `server/mods/`, `.zip` resourcepacks in `server/resourcepacks/`. For custom background — `background.png` / `.jpg` / `.jpeg` / `.webp` in `server/`.
 
-#### `server/config.txt` Reference
-
-All settings except TCP/UDP ports reload **live on the fly** whenever `config.txt` is edited or updated via `tui.py`:
-
-| Key | Default | Description |
-|---|---|---|
-| `language` | `ru` | Language for server console logs, TUI, and `config.txt` comments (`en` / `ru`) |
-| `server_name` | `botyaraMC Server` | Server display name shown in players' launchers |
-| `client_folder` | *(empty)* | Optional isolated instance subfolder under `.minecraft/instances/<name>` (empty = base `.minecraft`) |
-| `http_port` | `25456` | TCP port serving `/ping`, `/manifest`, `/mods/*`, and `/resourcepacks/*` |
-| `discovery_port` | `25457` | UDP port for automatic LAN / Radmin VPN discovery |
-| `rate_limit_per_min` | `300` | Max HTTP requests per IP per minute (`0` = disable rate limit) |
-| `mc_version` | `1.20.1` | Target Minecraft version installed & launched on clients |
-| `loader` | `fabric` | Mod loader: `fabric`, `forge`, `neoforge`, `quilt`, or `none` (Vanilla) |
-| `java_version` | `auto` | Required major Java version (`auto`, `8`, `17`, `21`, etc.) |
-| `delete_user_mods` | `false` | Delete extra unmanaged `.jar` mods added manually by players (`true` = strict modpack, `false` = allow client QoL mods) |
-| `hide_mods` | `none` | Mod filename cloaking: `none`, `words` (`silent-amber-otter-42.jar`), or `hash` (`mod_7f3a9c12e4b08d51.jar`) |
-| `hide_mods_list` | *(empty)* | Comma-separated `.jar` filenames to cloak selectively (empty = cloak all mods when `hide_mods != none`) |
-| `auto_join` | `true` | Automatically join the Minecraft server upon launch (`true` / `false`) |
-| `minecraft_server` | `127.0.0.1` | Minecraft server IP (`127.0.0.1` / `auto` automatically resolves to the sync server IP for remote players!) |
-| `minecraft_port` | `25565` | Minecraft server port |
-
----
+Run:
+```bash
+python server.py
+```
+The server will start announcing itself via UDP on LAN/VPN — player launchers will find it automatically.
 
 ### 2. Launcher (Players)
 
@@ -183,19 +206,17 @@ pip install -r requirements.txt
 python main.py
 ```
 
-On first launch, a **4-step setup wizard** walks through:
-1. **Language** (`English` / `Русский`)
-2. **Nickname** (`3–16` characters: `a-z`, `A-Z`, `0-9`, and `_` only)
-3. **Color Theme** (with instant live preview)
-4. **Sync Server** (enter IP or click **🔍 Auto-Find**)
+**First-Run Wizard (4 steps):**
+1. 🌐 Interface language (RU/EN)
+2. ✏️ In-game nickname (strict validation)
+3. 🎨 Color theme (live preview)
+4. 🔍 Sync server address — enter IP/domain or click **"Auto-Find"**
 
-> 💡 **Host Tip:** Open `⚙ Settings`, enable **👑 Host Mode**, and select your Minecraft server's `mods/` directory — pressing `▶ PLAY` will keep both your client mods and your dedicated server's `mods/` synced simultaneously.
+After the wizard finishes, the main screen opens. Hit **`▶ PLAY`** — the launcher downloads files, prepares the Minecraft version, and launches the game.
 
 ---
 
-## 🤖 CLI Mode & Automation
-
-Run `botyaraMC` headlessly without importing Tkinter — ideal for custom shortcuts, shell scripts, headless machines, and `systemd` user services:
+## 💻 CLI Mode & Automation
 
 ```bash
 cd launcher
@@ -222,8 +243,9 @@ python main.py --detect-java
 | `--detect-java` | Print all detected Java installations on the system and exit |
 | `--lang {ru,en}` | Output and crash diagnostics language (`en` or `ru`) |
 | `--nick NICK` | In-game nickname (`3–16` chars: `A-Za-z0-9_`) |
-| `--server HOST[:PORT]` | Sync server address (e.g. `26.12.34.56` or `26.12.34.56:25456`) |
+| `--server HOST[:PORT]` | Sync server address (IP, domain, or IDN, e.g. `play.example.com:25456`) |
 | `--mc-dir PATH` | Path to base `.minecraft` directory |
+| `--isolation {none,family,version}` | Version folder isolation mode |
 | `--ram MB` | Fixed RAM allocation in MB (e.g. `6144`) |
 | `--auto-ram` | Automatically calculate RAM based on system memory |
 | `--java PATH` | Explicit path to `java` executable |
@@ -231,6 +253,8 @@ python main.py --detect-java
 | `--jvm-args FLAGS` | Extra JVM arguments appended to the preset |
 | `--fullscreen` | Launch Minecraft in fullscreen mode |
 | `--resolution WxH` | Custom window resolution (e.g. `1920x1080`) |
+| `--gamemode` | (Linux) Wrap launch with `gamemoderun` |
+| `--mangohud` | (Linux) Enable `mangohud` FPS overlay |
 | `--timeout SEC` | Startup initialization timeout in seconds (`0` to disable) |
 | `--no-wait` | Detach immediately after starting the game process |
 | `--share-crash` | Automatically upload crash logs to `https://mclo.gs` and print the link |
@@ -265,6 +289,7 @@ WantedBy=default.target
 | Shortcut | Action |
 |---|---|
 | `Enter` / `Ctrl + P` | Launch Minecraft (from main screen) |
+| `R` / `К` (Cyrillic) | **Randomize greeting** |
 | `F5` / `Ctrl + R` | Refresh server manifest & recalculate download size |
 | `Ctrl + O` | Open quick folder selector (`1–7` keys inside) |
 | `Ctrl + L` | Open latest game log viewer (`game.log`) |
@@ -290,7 +315,7 @@ All themes switch instantaneously live (both in the setup wizard and in `⚙ Set
 
 ## 🛠 Config & Log Locations + Building a Standalone `.exe`
 
-Launcher settings (`config.json`), managed mod state (`managed.json`), per-server manifest caches (`manifest_cache_*.json`), and logs (`launcher.log`, `game.log`, `game.prev.log`) are stored in the standard OS user config directory:
+Launcher settings (`config.json`), managed mod state (`managed.json`), per-server manifest caches (`manifest_cache_<id>.json`), and logs (`launcher.log`, `game.log`, `game.prev.log`) are stored in the standard OS user config directory:
 
 - **Windows:** `%APPDATA%\botyaraMC`
 - **Linux:** `~/.config/botyaraMC`
@@ -303,11 +328,11 @@ Launcher settings (`config.json`), managed mod state (`managed.json`), per-serve
 ```powershell
 cd launcher
 pip install -r requirements.txt pyinstaller
-pyinstaller --noconfirm --onefile --windowed --name botyaraMC `
-  --icon icon.ico `
-  --add-data "icon.ico;." `
-  --add-data "icon.png;." `
-  --collect-all customtkinter `
+pyinstaller --noconfirm --onefile --windowed --name botyaraMC ^
+  --icon icon.ico ^
+  --add-data "icon.ico;." ^
+  --add-data "icon.png;." ^
+  --collect-all customtkinter ^
   main.py
 ```
 

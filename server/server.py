@@ -163,7 +163,14 @@ class Handler(BaseHTTPRequestHandler):
                     },
                     "mods": M.scan_mods(cfg),
                     "resourcepacks": M.scan_resourcepacks(),
+                    "background": M.scan_background(cfg),
                 }, head_only=head_only)
+            elif path == "/background" or path.startswith("/background/"):
+                p, mime = M.resolve_background(cfg)
+                if p is None:
+                    self._json({"error": "not found"}, 404, head_only=head_only)
+                    return
+                self._serve_file(p, mime, head_only=head_only)
             elif path.startswith("/mods/"):
                 p = M.resolve_mod(unquote(path[len("/mods/"):]), cfg)
                 if p is None:
@@ -225,7 +232,10 @@ def main():
     java_str = f"Java {cfg['java_version']}" if cfg["java_version"] else "Java auto"
     rl = cfg["rate_limit_per_min"]
     rl_str = f"{rl}/min" if rl else "off"
-    folder_str = cfg["client_folder"] or ".minecraft"
+    folder_str = cfg["client_folder"] or "client-default"
+    mc_srv_raw = str(cfg.get("minecraft_server") or "auto").strip()
+    is_auto_srv = mc_srv_raw.lower() in ("", "auto", "127.0.0.1", "localhost", "0.0.0.0")
+    bg_meta = M.scan_background(cfg)
 
     print("=" * 60)
     if en:
@@ -233,18 +243,26 @@ def main():
         print(f" HTTP: {cfg['http_port']} (Range + RateLimit {rl_str})   UDP: {cfg['discovery_port']}")
         for ip in local_ips():
             print(f"   your IP: {ip}   (Radmin VPN is usually 26.x.x.x)")
-        aj = f"{cfg['minecraft_server']}:{cfg['minecraft_port']}" if cfg["auto_join"] else "disabled"
+        if cfg["auto_join"]:
+            aj = f"auto (same host):{cfg['minecraft_port']}" if is_auto_srv else f"{mc_srv_raw}:{cfg['minecraft_port']}"
+        else:
+            aj = "disabled"
         print(f" Minecraft {cfg['mc_version']} / {cfg['loader']} ({java_str})  |  Auto-Join: {aj}")
-        print(f" Folder: {folder_str}  |  Cloak: {cfg['hide_mods']}  |  Delete user mods: {cfg['delete_user_mods']}")
+        bg_str = bg_meta["name"] if bg_meta else ("ready (drop background.png)" if cfg.get("serve_background", True) else "off")
+        print(f" Folder: {folder_str}  |  Cloak: {cfg['hide_mods']}  |  Strict mods: {cfg['delete_user_mods']}  |  BG: {bg_str}")
         print(" Drop .jar into mods/ & .zip into resourcepacks/. Ctrl+C to stop.")
     else:
         print(f" botyaraMC sync-server [{cfg['server_name']}] запущен 🚀")
         print(f" HTTP: {cfg['http_port']} (Range + лимит {rl_str})   UDP: {cfg['discovery_port']}")
         for ip in local_ips():
             print(f"   твой IP: {ip}   (в Radmin VPN обычно 26.x.x.x)")
-        aj = f"{cfg['minecraft_server']}:{cfg['minecraft_port']}" if cfg["auto_join"] else "выкл"
+        if cfg["auto_join"]:
+            aj = f"авто (по адресу синка):{cfg['minecraft_port']}" if is_auto_srv else f"{mc_srv_raw}:{cfg['minecraft_port']}"
+        else:
+            aj = "выкл"
         print(f" Minecraft {cfg['mc_version']} / {cfg['loader']} ({java_str})  |  Автовход: {aj}")
-        print(f" Папка: {folder_str}  |  Скрытие: {cfg['hide_mods']}  |  Удалять чужие моды: {cfg['delete_user_mods']}")
+        bg_str = bg_meta["name"] if bg_meta else ("готов (положи background.png)" if cfg.get("serve_background", True) else "выкл")
+        print(f" Папка: {folder_str}  |  Скрытие: {cfg['hide_mods']}  |  Строгие моды: {cfg['delete_user_mods']}  |  Фон: {bg_str}")
         print(" Кидай .jar в mods/ и .zip в resourcepacks/. Ctrl+C - выход.")
     print("=" * 60)
 

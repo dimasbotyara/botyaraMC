@@ -396,6 +396,12 @@ TEXTS = {
         "play_btn": "▶  ИГРАТЬ",
         "play_btn_dl": "▶  ИГРАТЬ  •  Скачать {size}",
         "play_btn_update": "▶  ИГРАТЬ  •  Обновить файлы",
+        "play_btn_swap": "▶  ИГРАТЬ  •  Переключить сборку",
+        "play_btn_running": "🎮  ИГРА ЗАПУЩЕНА",
+        "no_server_selected": "Сервер не выбран",
+        "status_no_server": "Сервер не выбран — добавь его в ⚙ Настройках",
+        "mc_ping_online": "🟢 Онлайн: {on}/{mx}  •  {ms} мс",
+        "mc_ping_offline": "⚪ Minecraft-сервер сейчас офлайн",
         "badge_mods": "модов: {n}",
         "badge_rp": "РП: {n}",
         "badge_hidden": "🕵 скрыты",
@@ -435,6 +441,7 @@ TEXTS = {
         "hk_heading": "⌨ Горячие клавиши botyaraMC",
         "hk_ok": "Понятно 👍",
         "hk_play": "Запустить игру (на главном экране)",
+        "hk_random_greet": "Сменить приветствие на случайное",
         "hk_refresh": "Перепроверить сервер и размер загрузки",
         "hk_folders": "Быстрое открытие папок (сборка, mods, screenshots…)",
         "hk_log": "Открыть полный лог последнего запуска (game.log)",
@@ -485,9 +492,19 @@ TEXTS = {
         # Диалог добавления нового сервера
         "add_srv_win_title": "Добавить сервер",
         "add_srv_heading": "🌐 Добавить новый сервер",
-        "add_srv_sub": "Введи IP сервера синхронизации (например в Radmin VPN) или найди его автоматически:",
+        "add_srv_sub": "Введи IP или домен сервера синхронизации (например в Radmin VPN) или найди автоматически:",
         "add_srv_name_ph": "Название (необязательно — подтянется с сервера)",
         "add_srv_confirm": "Добавить ✓",
+
+        # Диалог переименования папки сборки сервера
+        "ren_win_title": "Папка сборки сервера",
+        "ren_heading": "📁 Переименовать папку сборки",
+        "ren_sub": "Укажи имя папки внутри .minecraft/home/ (все моды, миры и настройки переедут сами):",
+        "ren_ph": "Например, Моя сборка 1.20",
+        "ren_confirm": "Сохранить ✓",
+        "ren_err_bad": "Недопустимое имя папки (избегай / \\ : * ? \" < > | и точек на конце)",
+        "ren_err_exists": "Непустая папка с таким именем уже занята другой сборкой!",
+        "ren_err_io": "Не удалось переименовать папку на диске (проверь, закрыта ли игра)",
 
         # Настройки (с автосохранением!)
         "st_title": "⚙ Настройки",
@@ -503,6 +520,10 @@ TEXTS = {
         "st_srv_remove": "🗑 Удалить",
         "st_srv_addr": "Адрес сервера",
         "st_find_btn": "🔍 Найти",
+        "st_srv_folder": "Папка этой сборки",
+        "st_srv_folder_rename": "✏ Переименовать",
+        "st_srv_folder_reset": "↺ Авто",
+        "st_srv_folder_root": ".minecraft (общая)",
         "st_host_mode": "Режим хоста",
         "st_host_switch": "я хост! 👑 (дублировать моды в папку сервера)",
         "st_srv_mods_dir": "Папка модов сервера",
@@ -532,8 +553,18 @@ TEXTS = {
         "st_edit_presets": "✏ Редактировать пресеты…",
         "st_extra_jvm": "Доп. параметры JVM",
         "st_extra_jvm_ph": "Дописать к пресету, например: -Dfile.encoding=UTF-8",
-        "st_sec_window": "🖥 Окно игры, папка .minecraft и таймаут",
+        "st_sec_window": "🖥 Папки версий, окно игры и поведение",
         "st_mc_dir": "Папка .minecraft",
+        "st_isolation": "Разделение версий",
+        "iso_none": "Без отдельных папок (.minecraft)",
+        "iso_family": "Отдельная папка для семейства (home/Fabric-1.16)",
+        "iso_version": "Отдельная папка для версии (home/Fabric 1.16.5)",
+        "st_on_launch": "При запуске игры",
+        "launch_keep": "Оставлять лаунчер открытым",
+        "launch_minimize": "Сворачивать окно",
+        "launch_hide": "Скрывать до выхода из игры",
+        "st_server_bg": "Фон от сервера",
+        "st_server_bg_switch": "Показывать кастомный фон сервера (если задан хостом)",
         "st_win_mode": "Режим окна игры",
         "win_default": "Обычное окно",
         "win_fullscreen": "Полный экран",
@@ -541,18 +572,33 @@ TEXTS = {
         "st_win_size": "Размер окна (Ш × В)",
         "st_timeout": "Таймаут запуска",
         "st_timeout_hint": "сек  (0 — отключить контроль зависания старта)",
-        "st_sec_account": "🚪 Выход из аккаунта и сброс серверов",
-        "st_signout_desc": "Очистить ник и все добавленные серверы в botyaraMC, вернувшись к мастеру настройки (файлы Minecraft не удаляются):",
-        "st_signout_btn": "🚪 Выйти из botyaraMC и удалить серверы",
-        "st_signout_confirm_title": "Выйти и удалить серверы?",
-        "st_signout_confirm_body": (
-            "Твой ник и список всех добавленных серверов в botyaraMC будут очищены, "
-            "и откроется мастер первого запуска.\n\nСами файлы Minecraft, миры и скриншоты останутся нетронутыми."
+        "st_sec_linux": "🐧 Linux: оптимизация и оверлей",
+        "st_gamemode": "Feral GameMode",
+        "st_gamemode_on": "Запускать игру через gamemoderun (установлен ✓)",
+        "st_gamemode_off": "gamemoderun не установлен (пакет gamemode)",
+        "st_mangohud": "MangoHud",
+        "st_mangohud_on": "Включить FPS-оверлей mangohud (установлен ✓)",
+        "st_mangohud_off": "mangohud не установлен (пакет mangohud)",
+        "st_sec_account": "🚪 Выход из аккаунта и удаление конфигов",
+        "st_signout_desc": (
+            "Полностью удалить конфиги и серверы botyaraMC из системной папки настроек "
+            "(~/.config/botyaraMC или %APPDATA%\\botyaraMC) и вернуться к мастеру первого запуска "
+            "(папка .minecraft, моды и миры не трогаются):"
         ),
-        "st_signout_yes": "Выйти и очистить",
+        "st_signout_btn": "🚪 Выйти из botyaraMC и удалить серверы",
+        "st_signout_confirm_title": "Выйти и удалить конфиги botyaraMC?",
+        "st_signout_confirm_body": (
+            "Твой профиль, список серверов и вся папка конфигов botyaraMC "
+            "(~/.config/botyaraMC / %APPDATA%\\botyaraMC) будут полностью удалены, "
+            "после чего откроется мастер первого запуска.\n\n"
+            "Сами файлы Minecraft, моды, миры и скриншоты останутся нетронутыми."
+        ),
+        "st_signout_yes": "Выйти и удалить",
         "st_signout_no": "Отмена",
-        "st_err_addr": "Адрес сервера не похож на IP или домен (пример: 26.12.34.56)",
+        "st_err_addr": "Адрес сервера не похож на IP или домен (пример: 26.12.34.56 или play.host.ru)",
         "st_err_host_dir": "Для режима хоста укажи существующую папку модов сервера",
+        "st_err_host_dup": "Эта папка уже закреплена за сервером «{srv}»! Укажи уникальную папку для каждого сервера.",
+        "st_err_host_sync_own": "Это раздающая папка самого sync-сервера! Укажи папку mods именно у Minecraft-сервера.",
         "st_err_ram": "Память (RAM) должна быть числом в мегабайтах (например 4096)",
         "st_err_java": "Укажи рабочий путь к Java или переключи режим на «Авто»",
         "st_err_res": "Ширина и высота окна должны быть числами (например 1920 и 1080)",
@@ -594,6 +640,12 @@ TEXTS = {
         "play_btn": "▶  PLAY",
         "play_btn_dl": "▶  PLAY  •  Download {size}",
         "play_btn_update": "▶  PLAY  •  Update files",
+        "play_btn_swap": "▶  PLAY  •  Switch pack",
+        "play_btn_running": "🎮  GAME RUNNING",
+        "no_server_selected": "No server selected",
+        "status_no_server": "No server selected — add one in ⚙ Settings",
+        "mc_ping_online": "🟢 Online: {on}/{mx}  •  {ms} ms",
+        "mc_ping_offline": "⚪ Minecraft server is currently offline",
         "badge_mods": "mods: {n}",
         "badge_rp": "RP: {n}",
         "badge_hidden": "🕵 cloaked",
@@ -633,6 +685,7 @@ TEXTS = {
         "hk_heading": "⌨ botyaraMC Keyboard Shortcuts",
         "hk_ok": "Got it 👍",
         "hk_play": "Launch Minecraft (on main screen)",
+        "hk_random_greet": "Randomize greeting",
         "hk_refresh": "Refresh server manifest & download size",
         "hk_folders": "Open quick folder selector (instance, mods, screenshots…)",
         "hk_log": "Open latest game log viewer (game.log)",
@@ -683,9 +736,19 @@ TEXTS = {
         # Add Server dialog
         "add_srv_win_title": "Add Server",
         "add_srv_heading": "🌐 Add a Sync Server",
-        "add_srv_sub": "Enter the sync server IP (e.g. Radmin VPN) or auto-discover it on LAN:",
+        "add_srv_sub": "Enter the sync server IP or domain (e.g. Radmin VPN) or auto-discover on LAN:",
         "add_srv_name_ph": "Display name (optional — fetched from server)",
         "add_srv_confirm": "Add server ✓",
+
+        # Rename Server Pack Folder dialog
+        "ren_win_title": "Server Pack Folder",
+        "ren_heading": "📁 Rename Pack Folder",
+        "ren_sub": "Enter a folder name inside .minecraft/home/ (mods, worlds & settings move automatically):",
+        "ren_ph": "For example, My Modpack 1.20",
+        "ren_confirm": "Save ✓",
+        "ren_err_bad": "Invalid folder name (avoid / \\ : * ? \" < > | and trailing dots)",
+        "ren_err_exists": "A non-empty folder with this name already belongs to another pack!",
+        "ren_err_io": "Could not rename folder on disk (make sure Minecraft is closed)",
 
         # Settings (Auto-saved!)
         "st_title": "⚙ Settings",
@@ -701,6 +764,10 @@ TEXTS = {
         "st_srv_remove": "🗑 Remove",
         "st_srv_addr": "Server address",
         "st_find_btn": "🔍 Find",
+        "st_srv_folder": "Pack folder",
+        "st_srv_folder_rename": "✏ Rename",
+        "st_srv_folder_reset": "↺ Auto",
+        "st_srv_folder_root": ".minecraft (shared)",
         "st_host_mode": "Host mode",
         "st_host_switch": "I'm the host! 👑 (mirror mods to MC server folder)",
         "st_srv_mods_dir": "Server mods folder",
@@ -730,8 +797,18 @@ TEXTS = {
         "st_edit_presets": "✏ Edit presets…",
         "st_extra_jvm": "Extra JVM flags",
         "st_extra_jvm_ph": "Appended to preset, e.g.: -Dfile.encoding=UTF-8",
-        "st_sec_window": "🖥 Game Window, .minecraft Path & Timeout",
+        "st_sec_window": "🖥 Version Folders, Game Window & Behavior",
         "st_mc_dir": ".minecraft folder",
+        "st_isolation": "Version folders",
+        "iso_none": "No separate folders (.minecraft)",
+        "iso_family": "Separate folder per family (home/Fabric-1.16)",
+        "iso_version": "Separate folder per version (home/Fabric 1.16.5)",
+        "st_on_launch": "When game starts",
+        "launch_keep": "Keep launcher open",
+        "launch_minimize": "Minimize window",
+        "launch_hide": "Hide until game closes",
+        "st_server_bg": "Server background",
+        "st_server_bg_switch": "Display custom background from server (if set by host)",
         "st_win_mode": "Game window mode",
         "win_default": "Default window",
         "win_fullscreen": "Fullscreen",
@@ -739,18 +816,33 @@ TEXTS = {
         "st_win_size": "Window size (W × H)",
         "st_timeout": "Launch timeout",
         "st_timeout_hint": "sec  (0 — disable startup freeze watchdog)",
-        "st_sec_account": "🚪 Sign Out & Reset Servers",
-        "st_signout_desc": "Clear your nickname and saved servers in botyaraMC and return to the setup wizard (your Minecraft files are kept safe):",
-        "st_signout_btn": "🚪 Sign out of botyaraMC & remove servers",
-        "st_signout_confirm_title": "Sign out & remove servers?",
-        "st_signout_confirm_body": (
-            "Your nickname and all saved sync servers in botyaraMC will be cleared, "
-            "and the setup wizard will open.\n\nYour Minecraft files, worlds, and screenshots remain untouched."
+        "st_sec_linux": "🐧 Linux: Performance & Overlay",
+        "st_gamemode": "Feral GameMode",
+        "st_gamemode_on": "Launch via gamemoderun (installed ✓)",
+        "st_gamemode_off": "gamemoderun not found (install 'gamemode' package)",
+        "st_mangohud": "MangoHud",
+        "st_mangohud_on": "Enable mangohud FPS overlay (installed ✓)",
+        "st_mangohud_off": "mangohud not found (install 'mangohud' package)",
+        "st_sec_account": "🚪 Sign Out & Delete Configs",
+        "st_signout_desc": (
+            "Completely delete botyaraMC configs and saved servers from your system config folder "
+            "(~/.config/botyaraMC or %APPDATA%\\botyaraMC) and return to the setup wizard "
+            "(.minecraft, mods, and worlds are untouched):"
         ),
-        "st_signout_yes": "Sign out & clear",
+        "st_signout_btn": "🚪 Sign out of botyaraMC & remove servers",
+        "st_signout_confirm_title": "Sign out & delete botyaraMC configs?",
+        "st_signout_confirm_body": (
+            "Your profile, saved servers, and the entire botyaraMC config directory "
+            "(~/.config/botyaraMC / %APPDATA%\\botyaraMC) will be deleted, "
+            "and the setup wizard will open.\n\n"
+            "Your Minecraft files, mods, worlds, and screenshots remain untouched."
+        ),
+        "st_signout_yes": "Sign out & delete",
         "st_signout_no": "Cancel",
-        "st_err_addr": "Server address doesn't look like a valid IP or domain (example: 26.12.34.56)",
+        "st_err_addr": "Server address doesn't look like a valid IP or domain (example: 26.12.34.56 or play.host.net)",
         "st_err_host_dir": "For Host Mode, select an existing Minecraft server mods folder",
+        "st_err_host_dup": "This folder is already assigned to server '{srv}'! Use a unique folder per server.",
+        "st_err_host_sync_own": "That's the sync-server's own folder! Select your Minecraft server's mods/ folder instead.",
         "st_err_ram": "Memory (RAM) must be a number in MB (e.g. 4096)",
         "st_err_java": "Provide a working Java binary path or switch Java mode to 'Auto'",
         "st_err_res": "Window width and height must be numbers (e.g. 1920 and 1080)",

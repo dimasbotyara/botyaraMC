@@ -28,8 +28,8 @@ def _targets():
     return out
 
 
-def discover_full(timeout=2.5, port=DISCOVERY_PORT):
-    """Возвращает (host, http_port, server_name) первого ответившего сервера или None."""
+def discover_all(timeout=2.0, port=DISCOVERY_PORT, stop_on_first=False):
+    """Возвращает список [(host, http_port, server_name), ...] ответивших серверов."""
     socks = []
     for local, bcast in _targets():
         try:
@@ -51,11 +51,14 @@ def discover_full(timeout=2.5, port=DISCOVERY_PORT):
     except OSError:
         pass
 
-    found = None
+    results = []
+    seen = set()
     deadline = time.time() + timeout
-    while socks and not found and time.time() < deadline:
+    while socks and time.time() < deadline:
+        if stop_on_first and results:
+            break
         try:
-            ready, _, _ = select.select(socks, [], [], 0.2)
+            ready, _, _ = select.select(socks, [], [], 0.15)
         except (OSError, ValueError):
             break
         for s in ready:
@@ -63,17 +66,28 @@ def discover_full(timeout=2.5, port=DISCOVERY_PORT):
                 data, addr = s.recvfrom(1024)
                 info = json.loads(data.decode("utf-8"))
                 if info.get("app") == "botyaraMC":
-                    found = (
+                    item = (
                         addr[0],
                         int(info.get("http_port", 25456)),
                         str(info.get("server_name") or "").strip(),
                     )
-                    break
+                    key = (item[0], item[1])
+                    if key not in seen:
+                        seen.add(key)
+                        results.append(item)
+                        if stop_on_first:
+                            break
             except (OSError, ValueError):
                 continue
     for s in socks:
         s.close()
-    return found
+    return results
+
+
+def discover_full(timeout=2.5, port=DISCOVERY_PORT):
+    """Возвращает (host, http_port, server_name) первого ответившего сервера или None."""
+    res = discover_all(timeout=timeout, port=port, stop_on_first=True)
+    return res[0] if res else None
 
 
 def discover(timeout=2.5, port=DISCOVERY_PORT):
