@@ -204,14 +204,10 @@ class App(ctk.CTk):
             if not btn.winfo_exists():
                 return
             col = _lerp_hex(self.theme["accent"], self.theme["accent_hover"], self._play_hover_t)
-            btn._fg_color = col
-            btn._hover_color = col
-            if hasattr(btn, "_canvas"):
-                btn._canvas.itemconfig("inner_parts", outline=col, fill=col)
-            if getattr(btn, "_text_label", None) is not None:
-                btn._text_label.configure(bg=col)
-            if getattr(btn, "_image_label", None) is not None:
-                btn._image_label.configure(bg=col)
+            # Use CustomTkinter's public options so it redraws the entire
+            # rounded button consistently (canvas-only edits leave stale grey
+            # border/background fragments on some platforms).
+            btn.configure(fg_color=col, hover_color=col)
         except Exception:
             pass
 
@@ -1150,11 +1146,21 @@ class App(ctk.CTk):
         if self.playing:
             return
         self.playing = True
+        # Stop an in-flight hover animation before the button enters its
+        # disabled/loading state; otherwise a late animation tick can repaint it.
+        if self._play_hover_job is not None:
+            try:
+                self.after_cancel(self._play_hover_job)
+            except Exception:
+                pass
+            self._play_hover_job = None
+        self._play_hover_t = 0.0
         self._prog = 0.0
         self._show_progress_bar(True)
         self._set_progress(0.02)
         try:
             self.play_btn.configure(state="disabled")
+            self._paint_play_button_color()
         except Exception:
             pass
         threading.Thread(target=self._play_worker, daemon=True).start()
@@ -1290,11 +1296,11 @@ class App(ctk.CTk):
     def _on_game_started(self):
         """Called when game window is detected - update UI for running state."""
         try:
-            # Keep button in hover color (accent_hover)
+            # Change button text/state first, then paint the full button using
+            # the public CTk options (disabled buttons still keep their accent).
+            self.play_btn.configure(text=self._tr("play_btn_running"), state="disabled")
             self._play_hover_t = 1.0
             self._paint_play_button_color()
-            # Change button text to "GAME RUNNING"
-            self.play_btn.configure(text=self._tr("play_btn_running"), state="disabled")
             # Hide progress bar
             self._show_progress_bar(False)
             # Show running status
