@@ -34,10 +34,12 @@ game.log
 
 # ─── Сервер: генерируется сам при первом запуске ──────────────────────
 server/config.txt
+server/.hide_salt
 server/mods/*.jar
 server/mods/*.zip
-# пустую папку mods/ храним в репе
 !server/mods/.gitkeep
+server/resourcepacks/*.zip
+!server/resourcepacks/.gitkeep
 
 # ─── Лаунчер: локальное состояние / кэш загрузок ──────────────────────
 launcher/cache/

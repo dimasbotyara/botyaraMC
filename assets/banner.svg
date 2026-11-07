@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" width="1200" height="360" role="img" aria-label="botyaraMC — Minimalist Minecraft launcher &amp; zero-hassle modpack sync">
+  <defs>
+    <!-- Main background gradient (Catppuccin Mocha) -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#181825"/>
+      <stop offset="55%" stop-color="#1e1e2e"/>
+      <stop offset="100%" stop-color="#11111b"/>
+    </linearGradient>
+
+    <!-- Border subtle gradient -->
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#cba6f7" stop-opacity="0.6"/>
+      <stop offset="50%" stop-color="#45475a" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#89b4fa" stop-opacity="0.6"/>
+    </linearGradient>
+
+    <!-- Title text gradient -->
+    <linearGradient id="titleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#cba6f7"/>
+      <stop offset="52%" stop-color="#b4befe"/>
+      <stop offset="100%" stop-color="#89b4fa"/>
+    </linearGradient>
+
+    <!-- Isometric cube faces -->
+    <linearGradient id="cubeTop" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a6e3a1"/>
+      <stop offset="100%" stop-color="#94e2d5"/>
+    </linearGradient>
+    <linearGradient id="cubeLeft" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#45475a"/>
+      <stop offset="100%" stop-color="#313244"/>
+    </linearGradient>
+    <linearGradient id="cubeRight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#313244"/>
+      <stop offset="100%" stop-color="#181825"/>
+    </linearGradient>
+
+    <!-- Ambient glows -->
+    <radialGradient id="glowPurple" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#cba6f7" stop-opacity="0.30"/>
+      <stop offset="65%" stop-color="#89b4fa" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#1e1e2e" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="glowBlue" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#89b4fa" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#1e1e2e" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Subtle grid pattern -->
+    <pattern id="dotGrid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#585b70" fill-opacity="0.30"/>
+    </pattern>
+
+    <!-- Soft shadow -->
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0b0b12" flood-opacity="0.65"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Card -->
+  <rect x="4" y="4" width="1192" height="352" rx="26" fill="url(#bgGrad)" stroke="url(#borderGrad)" stroke-width="2"/>
+  <rect x="12" y="12" width="1176" height="336" rx="20" fill="url(#dotGrid)"/>
+
+  <!-- Ambient Glows -->
+  <circle cx="210" cy="182" r="175" fill="url(#glowPurple)"/>
+  <circle cx="1010" cy="92" r="165" fill="url(#glowBlue)"/>
+
+  <!-- Floating Decorative Pixel Sparks -->
+  <g opacity="0.8">
+    <rect x="82" y="62" width="8" height="8" rx="2" fill="#cba6f7"/>
+    <rect x="332" y="56" width="6" height="6" rx="1.5" fill="#89b4fa"/>
+    <rect x="70" y="274" width="7" height="7" rx="1.5" fill="#a6e3a1"/>
+    <rect x="340" y="286" width="8" height="8" rx="2" fill="#f9e2af"/>
+    <rect x="1124" y="58" width="8" height="8" rx="2" fill="#cba6f7"/>
+    <rect x="1140" y="302" width="6" height="6" rx="1.5" fill="#a6e3a1"/>
+  </g>
+
+  <!-- ==================== LEFT ARTWORK: ISOMETRIC VOXEL + PLAY/SYNC EMBLEM ==================== -->
+  <g transform="translate(205, 180)" filter="url(#softShadow)">
+    <!-- Base platform shadow -->
+    <ellipse cx="0" cy="98" rx="90" ry="20" fill="#11111b" opacity="0.7"/>
+
+    <!-- Main Isometric Voxel Block -->
+    <polygon points="0,-96 88,-46 0,4 -88,-46" fill="url(#cubeTop)"/>
+    <!-- Top grass/crystal rim -->
+    <polygon points="-88,-46 0,4 0,20 -88,-30" fill="#74c7ec" opacity="0.9"/>
+    <polygon points="88,-46 0,4 0,20 88,-30" fill="#40a02b" opacity="0.8"/>
+
+    <!-- Left & Right stone faces -->
+    <polygon points="-88,-30 0,20 0,102 -88,52" fill="url(#cubeLeft)"/>
+    <polygon points="88,-30 0,20 0,102 88,52" fill="url(#cubeRight)"/>
+
+    <!-- Voxel amethyst/diamond ore pixels on left face -->
+    <polygon points="-64,-2 -48,7 -48,23 -64,14" fill="#cba6f7"/>
+    <polygon points="-38,28 -22,37 -22,53 -38,44" fill="#89b4fa"/>
+    <polygon points="-68,32 -56,39 -56,51 -68,44" fill="#f5c2e7"/>
+
+    <!-- Isometric Play Button (▶) projected onto Right Face -->
+    <polygon points="28,28 28,68 62,28" fill="#cba6f7"/>
+
+    <!-- Floating Amethyst Core Mini-Cube on top -->
+    <g transform="translate(0, -56)">
+      <polygon points="0,-32 30,-15 0,2 -30,-15" fill="#cba6f7"/>
+      <polygon points="-30,-15 0,2 0,34 -30,17" fill="#9370db"/>
+      <polygon points="30,-15 0,2 0,34 30,17" fill="#6c5ce7"/>
+    </g>
+
+    <!-- Orbiting Sync Badge -->
+    <g transform="translate(76, -68)">
+      <rect x="-24" y="-24" width="48" height="48" rx="14" fill="#181825" stroke="#cba6f7" stroke-width="2"/>
+      <path d="M-9,-3 A10,10 0 0,1 8,-6 M10,3 A10,10 0 0,1 -7,6" fill="none" stroke="#a6e3a1" stroke-width="2.8" stroke-linecap="round"/>
+      <polygon points="9,-11 12,-3 4,-4" fill="#a6e3a1"/>
+      <polygon points="-9,11 -12,3 -4,4" fill="#a6e3a1"/>
+    </g>
+  </g>
+
+  <!-- ==================== RIGHT CONTENT: TITLE, SUBTITLE & VECTOR FEATURE CHIPS ==================== -->
+  <g transform="translate(392, 0)" font-family="'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, Helvetica, Arial, sans-serif">
+    <!-- Top status badge -->
+    <g transform="translate(0, 56)">
+      <rect x="0" y="0" width="272" height="28" rx="14" fill="#313244" stroke="#45475a" stroke-width="1"/>
+      <circle cx="16" cy="14" r="4.5" fill="#a6e3a1"/>
+      <text x="30" y="18.5" fill="#cdd6f4" font-size="11.5" font-weight="700" letter-spacing="0.5">OPEN-SOURCE LAUNCHER + SYNC</text>
+    </g>
+
+    <!-- Main Title -->
+    <text x="-2" y="152" fill="url(#titleGrad)" font-size="72" font-weight="800" letter-spacing="-1.5">botyaraMC</text>
+
+    <!-- Shortened Tagline -->
+    <text x="2" y="193" fill="#cdd6f4" font-size="20" font-weight="600">
+      Minimalist Minecraft launcher &amp; zero-hassle modpack sync
+    </text>
+    <text x="2" y="221" fill="#a6adc8" font-size="14.5" font-weight="400">
+      Drop .jar &amp; .zip on the host server — press PLAY and join automatically.
+    </text>
+
+    <!-- Pure Vector Feature Chips -->
+    <g transform="translate(0, 250)" font-size="12.5" font-weight="600">
+      <!-- Chip 1: HTTP Range Sync -->
+      <g transform="translate(0, 0)">
+        <rect width="166" height="36" rx="10" fill="#181825" stroke="#45475a" stroke-width="1.2"/>
+        <path d="M23,10 L15,20 H21 L19,27 L27,17 H21 Z" fill="#cba6f7"/>
+        <text x="34" y="22.5" fill="#cba6f7">HTTP Range Sync</text>
+      </g>
+
+      <!-- Chip 2: Auto Java & ZGC -->
+      <g transform="translate(178, 0)">
+        <rect width="168" height="36" rx="10" fill="#181825" stroke="#45475a" stroke-width="1.2"/>
+        <rect x="15" y="15" width="11" height="9" rx="2" fill="none" stroke="#89b4fa" stroke-width="1.8"/>
+        <path d="M26,17 H28 A2,2 0 0,1 28,21 H26 M18,12 C18,10 20,10 20,12 M23,12 C23,10 25,10 25,12" fill="none" stroke="#89b4fa" stroke-width="1.6" stroke-linecap="round"/>
+        <line x1="13" y1="26.5" x2="28" y2="26.5" stroke="#89b4fa" stroke-width="1.8" stroke-linecap="round"/>
+        <text x="36" y="22.5" fill="#89b4fa">Auto Java &amp; ZGC</text>
+      </g>
+
+      <!-- Chip 3: Mod Cloaking -->
+      <g transform="translate(358, 0)">
+        <rect width="152" height="36" rx="10" fill="#181825" stroke="#45475a" stroke-width="1.2"/>
+        <path d="M21,10 L28,13 V18.5 C28,22.8 25,25.8 21,27 C17,25.8 14,22.8 14,18.5 V13 Z" fill="none" stroke="#a6e3a1" stroke-width="1.8" stroke-linejoin="round"/>
+        <circle cx="21" cy="18.5" r="2.2" fill="#a6e3a1"/>
+        <text x="35" y="22.5" fill="#a6e3a1">Mod Cloaking</text>
+      </g>
+
+      <!-- Chip 4: Crash + mclo.gs -->
+      <g transform="translate(522, 0)">
+        <rect width="170" height="36" rx="10" fill="#181825" stroke="#45475a" stroke-width="1.2"/>
+        <polyline points="13,19 17,19 19.5,12 23,25 25.5,19 29,19" fill="none" stroke="#f38ba8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="36" y="22.5" fill="#f38ba8">Crash + mclo.gs</text>
+      </g>
+    </g>
+
+    <!-- Colour Theme Dots -->
+    <g transform="translate(2, 310)">
+      <circle cx="8" cy="6" r="6" fill="#cba6f7"/>
+      <circle cx="26" cy="6" r="6" fill="#8839ef"/>
+      <circle cx="44" cy="6" r="6" fill="#fabd2f"/>
+      <circle cx="62" cy="6" r="6" fill="#ffcc66"/>
+      <circle cx="80" cy="6" r="6" fill="#a6e22e"/>
+      <text x="98" y="10.5" fill="#6c7086" font-size="12" font-weight="500">5 live themes  •  GUI &amp; Headless CLI  •  Windows / macOS / Linux</text>
+    </g>
+  </g>
+</svg>
