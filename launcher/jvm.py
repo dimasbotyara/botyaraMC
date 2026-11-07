@@ -44,6 +44,18 @@ PRESET_DESCRIPTIONS = {
     "Минимальный": "Без дополнительных флагов сборщика — только выделение памяти",
 }
 
+PRESET_DESCRIPTIONS_EN = {
+    "G1GC": "Balanced G1 garbage collector (recommended for most PCs)",
+    "Aikar's Flags": "Aikar's tuned G1GC flags — great for heavy modpacks",
+    "ZGC": "Ultra-low latency GC without micro-stutters (requires Java 17+, best on Java 21+)",
+    "Минимальный": "No extra collector flags — memory allocation only",
+}
+
+
+def preset_description(name, lang="ru"):
+    table = PRESET_DESCRIPTIONS_EN if lang == "en" else PRESET_DESCRIPTIONS
+    return table.get(name)
+
 _MOJANG_RUNTIME_BY_MAJOR = {
     8: "jre-legacy",
     16: "java-runtime-alpha",
@@ -107,6 +119,15 @@ def _detect_vendor(out_text, path_str):
     return "Java"
 
 
+def _short_version(ver_str):
+    """Укорачивает '21.0.13.0.3+9-LTS' -> '21.0.13', '1.8.0_412' -> '1.8.0_412'."""
+    base = (ver_str or "").split("+")[0].split("-")[0]
+    parts = base.split(".")
+    if len(parts) > 3:
+        return ".".join(parts[:3])
+    return base
+
+
 def probe_java(executable):
     """Проверяет бинарник java -version и возвращает словарь с версией или None."""
     norm = normalize_java_binary(executable)
@@ -155,14 +176,16 @@ def probe_java(executable):
     low = out.lower()
     is_64 = "32-bit" not in low
     vendor = _detect_vendor(out, resolved)
+    short_v = _short_version(ver_str)
     arch_note = "" if is_64 else ", 32-bit"
     info = {
         "path": resolved,
         "major": major,
         "version": ver_str,
+        "short_version": short_v,
         "vendor": vendor,
         "is_64bit": is_64,
-        "label": f"Java {major} ({vendor} {ver_str}{arch_note})",
+        "label": f"Java {major} • {vendor} ({short_v}{arch_note})",
     }
     _probe_cache[cache_key] = info
     return info

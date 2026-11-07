@@ -28,8 +28,8 @@ def _targets():
     return out
 
 
-def discover(timeout=2.5, port=DISCOVERY_PORT):
-    """Возвращает (host, http_port) первого ответившего сервера или None."""
+def discover_full(timeout=2.5, port=DISCOVERY_PORT):
+    """Возвращает (host, http_port, server_name) первого ответившего сервера или None."""
     socks = []
     for local, bcast in _targets():
         try:
@@ -63,10 +63,20 @@ def discover(timeout=2.5, port=DISCOVERY_PORT):
                 data, addr = s.recvfrom(1024)
                 info = json.loads(data.decode("utf-8"))
                 if info.get("app") == "botyaraMC":
-                    found = (addr[0], int(info.get("http_port", 25456)))
+                    found = (
+                        addr[0],
+                        int(info.get("http_port", 25456)),
+                        str(info.get("server_name") or "").strip(),
+                    )
                     break
             except (OSError, ValueError):
                 continue
     for s in socks:
         s.close()
     return found
+
+
+def discover(timeout=2.5, port=DISCOVERY_PORT):
+    """Возвращает (host, http_port) первого ответившего сервера или None."""
+    res = discover_full(timeout=timeout, port=port)
+    return (res[0], res[1]) if res else None

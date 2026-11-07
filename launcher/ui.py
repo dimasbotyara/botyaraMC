@@ -1,4 +1,4 @@
-"""Интерфейс botyaraMC: мастер первого запуска, главное окно, настройки, краш-парсер и хоткеи."""
+"""Интерфейс botyaraMC (RU/EN): мастер 4 шага, мульти-серверы, автосохранение настроек, краш-парсер."""
 import logging
 import queue
 import re
@@ -16,29 +16,23 @@ import customtkinter as ctk
 import config as cfgmod
 import crash
 import discovery
+import i18n
 import jvm
 import mc
 import sync
 import themes
 
 log = logging.getLogger("botyaraMC.ui")
-NICK_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 DEFAULT_PORT = 25456
-
-WINDOW_MODES_UI = {
-    "Обычное": "default",
-    "Полный экран": "fullscreen",
-    "Свой размер": "custom",
-}
-WINDOW_MODES_REV = {v: k for k, v in WINDOW_MODES_UI.items()}
+GREETING_ROTATE_MS = 10 * 60 * 1000  # 10 минут
 
 
 def parse_hostport(text):
-    t = text.strip().rstrip("/")
+    t = (text or "").strip().rstrip("/")
     for prefix in ("http://", "https://"):
         if t.startswith(prefix):
             t = t[len(prefix):]
-    if not t:
+    if not t or " " in t:
         return None
     host, port = t, DEFAULT_PORT
     if ":" in t:
@@ -46,9 +40,35 @@ def parse_hostport(text):
         if not p.isdigit() or not 0 < int(p) < 65536:
             return None
         port = int(p)
-    if not host or " " in host:
+    if not host:
+        return None
+    if re.fullmatch(r"[0-9.]+", host):
+        parts = host.split(".")
+        if len(parts) != 4 or any(not x.isdigit() or not 0 <= int(x) <= 255 for x in parts):
+            return None
+        return host, port
+    if len(host) < 2 or not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*", host):
+        return None
+    if host.startswith("-") or host.endswith("-"):
         return None
     return host, port
+
+
+def _hex_to_rgb(h):
+    h = h.lstrip("#")
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _lerp_hex(c1, c2, t):
+    t = max(0.0, min(1.0, float(t)))
+    r1, g1, b1 = _hex_to_rgb(c1)
+    r2, g2, b2 = _hex_to_rgb(c2)
+    r = round(r1 + (r2 - r1) * t)
+    g = round(g1 + (g2 - g1) * t)
+    b = round(b1 + (b2 - b1) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 class App(ctk.CTk):
@@ -68,8 +88,8 @@ class App(ctk.CTk):
         ctk.set_appearance_mode(self.theme["mode"])
         super().__init__()
         self.title("botyaraMC")
-        self.geometry("860x660")
-        self.minsize(780, 600)
+        self.geometry("920x680")
+        self.minsize(860, 620)
         self.configure(fg_color=self.theme["bg"])
         self._ico_path, self._icon_img = None, None
         self._apply_window_icon()
@@ -80,22 +100,34 @@ class App(ctk.CTk):
         self.view_name = ""
         self.playing = False
         self._status, self._prog = "", 0.0
-        self._play_btn_text = "▶  ИГРАТЬ"
+        self._play_hover_t = 0.0
+        self._play_hover_job = None
+        self._greeting = ""
+        self._greeting_job = None
         self._server_badge_text = ""
-        self._last_manifest = cfgmod.load_cache()
-        self._save_settings_fn = None
-        self._cancel_settings_fn = None
+        self._last_manifest = cfgmod.load_cache(self.cfg.get("active_server_id") or None)
+        self._close_settings_fn = None
         self._active_dialogs = []
         self._force = False
         self.draft = {
+            "lang": self._lang(),
             "nick": self.cfg["nickname"],
             "theme": self.cfg["theme"],
             "host": self._addr_text(),
+            "server_name": "",
         }
+        self._play_btn_text = self._tr("play_btn")
 
         self._bind_hotkeys()
         self.after(60, self._pump)
+        self._schedule_greeting_rotation()
         self.show("main" if self.cfg["setup_done"] else "wizard")
+
+    def _lang(self):
+        return "en" if self.cfg.get("language") == "en" else "ru"
+
+    def _tr(self, key, **kwargs):
+        return i18n.tr(self._lang(), key, **kwargs)
 
     def _apply_window_icon(self):
         here = Path(__file__).resolve().parent
@@ -135,6 +167,103 @@ class App(ctk.CTk):
                 w.configure(**{k: self.theme[v] for k, v in opts.items()})
             except Exception:
                 self._reg.pop(w, None)
+        self._paint_play_button_color()
+
+    # ------------------------------------------------------------ автосмена приветствий каждые 10 минут
+    def _schedule_greeting_rotation(self):
+        if self._greeting_job is not None:
+            try:
+                self.after_cancel(self._greeting_job)
+            except Exception:
+                pass
+        self._greeting_job = self.after(GREETING_ROTATE_MS, self._rotate_greeting)
+
+    def _rotate_greeting(self):
+        self._greeting_job = None
+        try:
+            if not self.winfo_exists():
+                return
+            self._greeting = i18n.random_greeting(
+                self.cfg.get("nickname") or "",
+                lang=self._lang(),
+                prev=self._greeting,
+            )
+            lbl = getattr(self, "greeting_lbl", None)
+            if lbl is not None and lbl.winfo_exists():
+                lbl.configure(text=self._greeting)
+        except Exception:
+            pass
+        self._schedule_greeting_rotation()
+
+    # ------------------------------------------------------------ плавный hover кнопки ИГРАТЬ (#22)
+    def _paint_play_button_color(self):
+        btn = getattr(self, "play_btn", None)
+        if btn is None:
+            return
+        try:
+            if not btn.winfo_exists():
+                return
+            col = _lerp_hex(self.theme["accent"], self.theme["accent_hover"], self._play_hover_t)
+            btn._fg_color = col
+            btn._hover_color = col
+            if hasattr(btn, "_canvas"):
+                btn._canvas.itemconfig("inner_parts", outline=col, fill=col)
+            if getattr(btn, "_text_label", None) is not None:
+                btn._text_label.configure(bg=col)
+            if getattr(btn, "_image_label", None) is not None:
+                btn._image_label.configure(bg=col)
+        except Exception:
+            pass
+
+    def _animate_play_hover(self, target):
+        if self._play_hover_job is not None:
+            try:
+                self.after_cancel(self._play_hover_job)
+            except Exception:
+                pass
+            self._play_hover_job = None
+
+        def step():
+            self._play_hover_job = None
+            btn = getattr(self, "play_btn", None)
+            if btn is None or not btn.winfo_exists():
+                return
+            if self.playing:
+                self._play_hover_t = 0.0
+                self._paint_play_button_color()
+                return
+            diff = target - self._play_hover_t
+            if abs(diff) <= 0.04:
+                self._play_hover_t = target
+                self._paint_play_button_color()
+                return
+            self._play_hover_t += diff * 0.28 + (0.04 if diff > 0 else -0.04)
+            self._play_hover_t = max(0.0, min(1.0, self._play_hover_t))
+            self._paint_play_button_color()
+            self._play_hover_job = self.after(16, step)
+
+        step()
+
+    def _bind_play_hover(self, btn):
+        self._play_hover_t = 0.0
+        self._paint_play_button_color()
+
+        def _on_enter(_e=None):
+            self._animate_play_hover(1.0)
+
+        def _on_leave(_e=None):
+            try:
+                if btn.winfo_exists():
+                    x = btn.winfo_pointerx() - btn.winfo_rootx()
+                    y = btn.winfo_pointery() - btn.winfo_rooty()
+                    if 0 <= x < btn.winfo_width() and 0 <= y < btn.winfo_height():
+                        return  # курсор всё ещё внутри кнопки (например над текстом)
+            except Exception:
+                pass
+            self._animate_play_hover(0.0)
+
+        btn.bind("<Enter>", _on_enter, add="+")
+        btn.bind("<Leave>", _on_leave, add="+")
 
     # ------------------------------------------------------------ хоткеи
     def _is_typing_widget(self):
@@ -156,8 +285,6 @@ class App(ctk.CTk):
         self.bind_all("<Control-comma>", lambda _e: self._on_hotkey_settings())
         self.bind_all("<Control-p>", lambda _e: self._on_hotkey_play())
         self.bind_all("<Control-P>", lambda _e: self._on_hotkey_play())
-        self.bind_all("<Control-s>", lambda _e: self._on_hotkey_save())
-        self.bind_all("<Control-S>", lambda _e: self._on_hotkey_save())
         self.bind_all("<Return>", lambda _e: self._on_hotkey_enter())
         self.bind_all("<Escape>", lambda _e: self._on_hotkey_escape())
 
@@ -191,10 +318,6 @@ class App(ctk.CTk):
         if self.view_name == "main":
             self.show("settings")
 
-    def _on_hotkey_save(self):
-        if self.view_name == "settings" and self._save_settings_fn:
-            self._save_settings_fn()
-
     def _on_hotkey_escape(self):
         self._clean_dialogs()
         if self._active_dialogs:
@@ -204,8 +327,8 @@ class App(ctk.CTk):
             except Exception:
                 pass
             return
-        if self.view_name == "settings" and self._cancel_settings_fn:
-            self._cancel_settings_fn()
+        if self.view_name == "settings" and self._close_settings_fn:
+            self._close_settings_fn()
 
     # ------------------------------------------------------------ мелкие помощники
     def post(self, fn, *a, **kw):
@@ -222,11 +345,26 @@ class App(ctk.CTk):
         self.after(60, self._pump)
 
     def show(self, name, *a):
-        self._save_settings_fn = None
-        self._cancel_settings_fn = None
+        self._close_settings_fn = None
+        if self._play_hover_job is not None:
+            try:
+                self.after_cancel(self._play_hover_job)
+            except Exception:
+                pass
+            self._play_hover_job = None
         if self.view is not None:
             self.view.destroy()
         self.view_name = name
+        if name == "main":
+            # Генерируем новое живое приветствие по времени суток при заходе на главный экран
+            self._greeting = i18n.random_greeting(
+                self.cfg.get("nickname") or "",
+                lang=self._lang(),
+                prev=self._greeting,
+            )
+            self._schedule_greeting_rotation()
+            if not self.playing:
+                self._play_btn_text = self._tr("play_btn")
         self.view = getattr(self, "_view_" + name)(*a)
         self.view.pack(fill="both", expand=True)
         if name == "main":
@@ -273,6 +411,7 @@ class App(ctk.CTk):
                       placeholder_text_color="subtext")
 
     def option_menu(self, parent, values, command=None, **kw):
+        kw.setdefault("dynamic_resizing", False)
         om = ctk.CTkOptionMenu(parent, values=values, command=command, corner_radius=8, **kw)
         return self.T(
             om,
@@ -285,23 +424,11 @@ class App(ctk.CTk):
             dropdown_text_color="text",
         )
 
-    def segmented(self, parent, values, command=None, **kw):
-        sb = ctk.CTkSegmentedButton(parent, values=values, command=command, corner_radius=8, **kw)
-        return self.T(
-            sb,
-            fg_color="surface",
-            selected_color="accent",
-            selected_hover_color="accent_hover",
-            unselected_color="surface",
-            unselected_hover_color="surface_hover",
-            text_color="on_accent",
-        )
-
-    def _make_dialog(self, title, width=560, height=440):
+    def _make_dialog(self, title, width=560, height=460, min_w=None, min_h=None):
         dlg = ctk.CTkToplevel(self)
         dlg.title(title)
         dlg.geometry(f"{width}x{height}")
-        dlg.minsize(min(460, width), min(320, height))
+        dlg.minsize(min_w or min(500, width), min_h or min(380, height))
         self.T(dlg, fg_color="bg")
         if sys.platform.startswith("win") and self._ico_path:
             try:
@@ -327,20 +454,31 @@ class App(ctk.CTk):
         self.clipboard_append(text)
         self.update_idletasks()
 
-    def _addr_text(self):
-        h, p = self.cfg.get("sync_host", ""), self.cfg.get("sync_port", DEFAULT_PORT)
+    def _addr_text(self, host=None, port=None):
+        h = self.cfg.get("sync_host", "") if host is None else host
+        p = self.cfg.get("sync_port", DEFAULT_PORT) if port is None else port
         return "" if not h else (h if p == DEFAULT_PORT else f"{h}:{p}")
 
-    def _browse_dir(self, entry):
+    def _server_label(self, srv):
+        addr = self._addr_text(srv.get("host", ""), srv.get("port", DEFAULT_PORT))
+        nm = (srv.get("name") or "").strip()
+        if nm:
+            return f"{nm} ({addr})"
+        return addr
+
+    def _browse_dir(self, entry, on_change=None):
         path = filedialog.askdirectory()
         if path:
             entry.configure(state="normal")
             entry.delete(0, "end")
             entry.insert(0, path)
+            if on_change:
+                on_change()
 
     def _browse_file(self, entry, on_change=None):
-        filetypes = [("Java executable", "java.exe javaw.exe java"), ("Все файлы", "*.*")] \
-            if sys.platform.startswith("win") else [("Все файлы", "*")]
+        all_lbl = "All files" if self._lang() == "en" else "Все файлы"
+        filetypes = [("Java executable", "java.exe javaw.exe java"), (all_lbl, "*.*")] \
+            if sys.platform.startswith("win") else [(all_lbl, "*")]
         path = filedialog.askopenfilename(filetypes=filetypes)
         if path:
             entry.configure(state="normal")
@@ -349,73 +487,125 @@ class App(ctk.CTk):
             if on_change:
                 on_change()
 
-    def _autofind(self, entry, lbl, btn):
+    def _autofind(self, entry, lbl, btn, on_found=None):
         btn.configure(state="disabled")
-        self.msg(lbl, "Ищем сервер в сети… 🔍")
+        self.msg(lbl, self._tr("wiz_searching"))
 
         def work():
-            self.post(done, discovery.discover(3.0))
+            self.post(done, discovery.discover_full(3.0))
 
         def done(res):
             try:
                 btn.configure(state="normal")
                 if res:
-                    host, port = res
+                    host, port, sname = res
+                    addr = host if port == DEFAULT_PORT else f"{host}:{port}"
                     entry.delete(0, "end")
-                    entry.insert(0, host if port == DEFAULT_PORT else f"{host}:{port}")
-                    self.msg(lbl, f"Нашли сервер: {host} 🎉", "success")
+                    entry.insert(0, addr)
+                    disp = f"{sname} ({addr})" if sname else addr
+                    self.msg(lbl, self._tr("wiz_found", host=disp), "success")
+                    if on_found:
+                        on_found(host, port, sname)
                 else:
-                    self.msg(lbl, "Не нашли 😕 Включён Radmin VPN? Можно вписать IP руками.", "danger")
+                    self.msg(lbl, self._tr("wiz_not_found"), "danger")
             except Exception:
                 pass
 
         threading.Thread(target=work, daemon=True).start()
 
-    # ------------------------------------------------------------ мастер первого запуска
+    # ============================================================ МАСТЕР ПЕРВОГО ЗАПУСКА (4 шага)
     def _view_wizard(self, step=1):
         root = self.frame(self, "bg")
         card = self.frame(root, "panel", corner_radius=18)
         card.pack(fill="both", expand=True, padx=28, pady=28)
-        self.label(card, f"Шаг {step} из 3", 12, color="subtext").pack(
-            anchor="w", padx=28, pady=(22, 0))
+        self.label(
+            card,
+            self._tr("wizard_step", step=step, total=4),
+            12, color="subtext",
+        ).pack(anchor="w", padx=28, pady=(22, 0))
         getattr(self, f"_step{step}")(card)
         return root
 
     def _nav(self, card, back, next_text, next_cmd):
         bar = self.frame(card, "panel")
         bar.pack(side="bottom", fill="x", padx=28, pady=22)
-        nxt = self.button(bar, next_text, next_cmd, width=170, height=42)
+        nxt = self.button(bar, next_text, next_cmd, width=180, height=42)
         nxt.pack(side="right")
         if back:
-            self.button(bar, "← Назад", back, primary=False, width=110, height=42).pack(side="left")
+            self.button(bar, self._tr("btn_back"), back, primary=False, width=120, height=42).pack(side="left")
         return nxt
 
+    # Шаг 1 из 4 — Выбор языка (до выбора ника!)
     def _step1(self, card):
-        self.label(card, "Привет! Добро пожаловать в botyaraMC 👋", 26, True).pack(
-            anchor="w", padx=28, pady=(6, 4))
-        self.label(card, "Как тебя зовут в игре? Это будет твой ник 😎", color="subtext").pack(
+        self.label(card, self._tr("wiz_lang_title"), 26, True).pack(
+            anchor="w", padx=28, pady=(8, 4))
+        self.label(card, self._tr("wiz_lang_sub"), color="subtext").pack(
             anchor="w", padx=28)
-        e = self.entry(card, height=44, width=340, placeholder_text="Например, Steve_228")
+
+        row = self.frame(card, "panel")
+        row.pack(anchor="w", padx=28, pady=28)
+
+        cur_lang = self._lang()
+        for code, title_txt, sub_txt in (
+            ("ru", "🇷🇺  Русский", "Интерфейс, приветствия и диагностика на русском"),
+            ("en", "🇬🇧  English", "Interface, greetings, and crash diagnostics in English"),
+        ):
+            selected = (cur_lang == code)
+            box = self.frame(
+                row, "bg" if selected else "surface",
+                corner_radius=14, border_width=2,
+            )
+            self.T(box, border_color="accent" if selected else "border")
+            box.pack(side="left", padx=(0, 18), ipadx=18, ipady=14)
+
+            lbl_t = self.label(box, title_txt, 20, True, color="accent" if selected else "text")
+            lbl_t.pack(anchor="w", padx=18, pady=(12, 4))
+            lbl_s = self.label(box, sub_txt, 12, color="subtext", wraplength=260)
+            lbl_s.pack(anchor="w", padx=18, pady=(0, 12))
+
+            def pick_lang(_e=None, c_code=code):
+                self.draft["lang"] = c_code
+                self.cfg["language"] = c_code
+                cfgmod.save(self.cfg)
+                self.show("wizard", 1)
+
+            for w in (box, lbl_t, lbl_s):
+                try:
+                    w.configure(cursor="hand2")
+                except Exception:
+                    pass
+                w.bind("<Button-1>", pick_lang)
+
+        self._nav(card, None, self._tr("btn_next"), lambda: self.show("wizard", 2))
+
+    # Шаг 2 из 4 — Выбор ника (строгая валидация a-zA-Z0-9_)
+    def _step2(self, card):
+        self.label(card, self._tr("wiz_nick_title"), 26, True).pack(
+            anchor="w", padx=28, pady=(6, 4))
+        self.label(card, self._tr("wiz_nick_sub"), color="subtext").pack(
+            anchor="w", padx=28)
+        e = self.entry(card, height=44, width=360, placeholder_text=self._tr("wiz_nick_placeholder"))
         e.pack(anchor="w", padx=28, pady=(20, 6))
         e.insert(0, self.draft["nick"])
-        err = self.label(card, "3–16 символов: английские буквы, цифры и _", 12, color="subtext")
+        err = self.label(card, self._tr("wiz_nick_hint"), 12, color="subtext", wraplength=680)
         err.pack(anchor="w", padx=28)
 
         def nxt():
-            nick = e.get().strip()
-            if not NICK_RE.match(nick):
-                self.msg(err, "Ник: 3–16 символов, только a-z, A-Z, 0-9 и _ 🙂", "danger")
+            raw_nick = e.get()
+            ok, msg_err = i18n.validate_nickname(raw_nick, lang=self._lang())
+            if not ok:
+                self.msg(err, msg_err, "danger")
                 return
-            self.draft["nick"] = nick
-            self.show("wizard", 2)
+            self.draft["nick"] = raw_nick
+            self.show("wizard", 3)
 
         e.bind("<Return>", lambda _e: nxt())
-        self._nav(card, None, "Дальше →", nxt)
+        self._nav(card, lambda: self.show("wizard", 1), self._tr("btn_next"), nxt)
 
-    def _step2(self, card):
-        self.label(card, "Выбери тему 🎨", 26, True).pack(anchor="w", padx=28, pady=(6, 4))
-        self.label(card, "Всё вокруг перекрашивается прямо сейчас — это и есть предпросмотр.",
-                   color="subtext").pack(anchor="w", padx=28)
+    # Шаг 3 из 4 — Тема оформления
+    def _step3(self, card):
+        self.label(card, self._tr("wiz_theme_title"), 26, True).pack(anchor="w", padx=28, pady=(6, 4))
+        self.label(card, self._tr("wiz_theme_sub"), color="subtext").pack(anchor="w", padx=28)
         body = self.frame(card, "panel")
         body.pack(fill="both", expand=True, padx=28, pady=14)
         left = self.frame(body, "panel")
@@ -435,38 +625,40 @@ class App(ctk.CTk):
         right = self.frame(body, "panel")
         right.pack(side="right", fill="both", expand=True, padx=(28, 0))
         self._mock(right)
-        self._nav(card, lambda: self.show("wizard", 1), "Дальше →", lambda: self.show("wizard", 3))
+        self._nav(card, lambda: self.show("wizard", 2), self._tr("btn_next"), lambda: self.show("wizard", 4))
 
     def _mock(self, parent):
         m = self.frame(parent, "bg", corner_radius=16, border_width=2)
         self.T(m, border_color="border")
         m.pack(fill="both", expand=True)
-        self.label(m, "botyaraMC", 30, True, "accent").pack(pady=(26, 2))
-        self.label(m, f"Привет, {self.draft['nick'] or 'игрок'}! 👋", color="subtext").pack()
-        pb = ctk.CTkProgressBar(m, width=230)
-        self.T(pb, fg_color="surface", progress_color="accent")
-        pb.set(0.65)
-        pb.pack(pady=18)
-        self.button(m, "▶  ИГРАТЬ", None, width=210, height=42,
+        self.label(m, "botyaraMC", 30, True, "accent").pack(pady=(28, 4))
+        sample_nick = self.draft["nick"] or ("player" if self._lang() == "en" else "игрок")
+        greet_sample = i18n.random_greeting(sample_nick, lang=self._lang())
+        self.label(m, greet_sample, color="subtext").pack(pady=(0, 18))
+        self.button(m, self._tr("play_btn"), None, width=220, height=44,
                     font=ctk.CTkFont(size=16, weight="bold")).pack()
         row = self.frame(m, "bg")
-        row.pack(pady=20)
+        row.pack(pady=24)
         for key in ("accent", "success", "danger", "surface", "text"):
             self.frame(row, key, corner_radius=10, width=26, height=26).pack(side="left", padx=4)
 
-    def _step3(self, card):
-        self.label(card, "Где живёт сервер синхронизации? 🌐", 26, True).pack(
+    # Шаг 4 из 4 — Сервер синхронизации
+    def _step4(self, card):
+        self.label(card, self._tr("wiz_srv_title"), 26, True).pack(
             anchor="w", padx=28, pady=(6, 4))
-        self.label(card, "Впиши IP в Radmin VPN или нажми «Найти автоматически».",
-                   color="subtext").pack(anchor="w", padx=28)
+        self.label(card, self._tr("wiz_srv_sub"), color="subtext").pack(anchor="w", padx=28)
         row = self.frame(card, "panel")
         row.pack(anchor="w", padx=28, pady=(20, 6))
-        e = self.entry(row, height=44, width=290, placeholder_text="26.12.34.56")
+        e = self.entry(row, height=44, width=300, placeholder_text="26.12.34.56")
         e.pack(side="left")
         e.insert(0, self.draft["host"])
-        m = self.label(card, "", 13, color="subtext", wraplength=620)
-        find = self.button(row, "🔍 Найти автоматически", primary=False, height=44, width=200)
-        find.configure(command=lambda: self._autofind(e, m, find))
+        m = self.label(card, "", 13, color="subtext", wraplength=660)
+
+        def on_discovered(_h, _p, sname):
+            self.draft["server_name"] = sname or ""
+
+        find = self.button(row, self._tr("wiz_find_auto"), primary=False, height=44, width=210)
+        find.configure(command=lambda: self._autofind(e, m, find, on_found=on_discovered))
         find.pack(side="left", padx=12)
         m.pack(anchor="w", padx=28, pady=4)
         self._force = False
@@ -474,121 +666,166 @@ class App(ctk.CTk):
         def reset(_e=None):
             if self._force:
                 self._force = False
-                fin.configure(text="Готово 🚀")
+                fin.configure(text=self._tr("btn_finish"))
 
         e.bind("<KeyRelease>", reset)
 
         def finish():
             parsed = parse_hostport(e.get())
             if not parsed:
-                self.msg(m, "Не похоже на адрес 🤔 Пример: 26.12.34.56", "danger")
+                self.msg(m, self._tr("wiz_bad_addr"), "danger")
                 return
             host, port = parsed
-            self.draft["host"] = e.get()
+            self.draft["host"] = e.get().strip()
             if self._force:
-                return self._finish_setup(host, port)
+                return self._finish_setup(host, port, self.draft.get("server_name", ""))
             fin.configure(state="disabled")
-            self.msg(m, "Проверяем связь… ⏳")
+            self.msg(m, self._tr("wiz_checking"))
 
             def work():
                 try:
                     mf = sync.fetch_manifest(host, port)
-                    cfgmod.save_cache(mf)
-                    self.post(done, True)
+                    self.post(done, True, mf)
                 except Exception:
                     log.exception("проверка сервера не прошла")
-                    self.post(done, False)
+                    self.post(done, False, None)
 
-            def done(ok):
+            def done(ok, mf):
                 try:
                     fin.configure(state="normal")
                     if ok:
-                        self._finish_setup(host, port)
+                        sname = (mf or {}).get("server_name") or self.draft.get("server_name", "")
+                        self._finish_setup(host, port, sname, manifest=mf)
                     else:
                         self._force = True
-                        fin.configure(text="Сохранить так 💾")
-                        self.msg(m, "Сервер не отвечает 😕 Проверь IP и Radmin VPN. "
-                                    "Можно сохранить как есть и поправить позже.", "danger")
+                        fin.configure(text=self._tr("btn_save_anyway"))
+                        self.msg(m, self._tr("wiz_offline_warn"), "danger")
                 except Exception:
                     pass
 
             threading.Thread(target=work, daemon=True).start()
 
-        fin = self._nav(card, lambda: self.show("wizard", 2), "Готово 🚀", finish)
+        fin = self._nav(card, lambda: self.show("wizard", 3), self._tr("btn_finish"), finish)
 
-    def _finish_setup(self, host, port):
+    def _finish_setup(self, host, port, server_name="", manifest=None):
         c = self.cfg
-        c.update(
-            nickname=self.draft["nick"],
-            theme=self.draft["theme"],
-            sync_host=host,
-            sync_port=port,
-            setup_done=True,
-            mc_dir=str(mc.find_minecraft_dir(c.get("mc_dir", ""))),
-        )
+        c["language"] = self.draft.get("lang", self._lang())
+        c["nickname"] = self.draft["nick"]
+        c["theme"] = self.draft["theme"]
+        c["setup_done"] = True
+        c["mc_dir"] = str(mc.find_minecraft_dir(c.get("mc_dir", "")))
+        entry = cfgmod.add_or_select_server(c, host, port, name=server_name)
         cfgmod.save(c)
+        if manifest is not None:
+            cfgmod.save_cache(manifest, server_id=entry["id"])
+            self._last_manifest = manifest
         self.show("main")
 
-    # ------------------------------------------------------------ главное окно
+    # ============================================================ ГЛАВНОЕ ОКНО
     def _view_main(self):
         root = self.frame(self, "bg")
         top = self.frame(root, "bg")
-        top.pack(fill="x", padx=20, pady=(16, 0))
+        top.pack(fill="x", padx=22, pady=(16, 0))
 
-        self.button(top, "⚙ Настройки", lambda: self.show("settings"), primary=False,
-                    width=130, height=34).pack(side="right")
-        self.button(top, "📂 Папки ▾", self._open_folders_dialog, primary=False,
-                    width=112, height=34).pack(side="right", padx=(0, 8))
-        self.button(top, "📄 Лог", self._open_latest_game_log, primary=False,
-                    width=84, height=34).pack(side="right", padx=(0, 8))
+        self.button(top, self._tr("top_settings"), lambda: self.show("settings"), primary=False,
+                    width=136, height=34).pack(side="right")
+        self.button(top, self._tr("top_folders"), self._open_folders_dialog, primary=False,
+                    width=116, height=34).pack(side="right", padx=(0, 8))
+        self.button(top, self._tr("top_log"), self._open_latest_game_log, primary=False,
+                    width=90, height=34).pack(side="right", padx=(0, 8))
         self.button(top, "⌨", self._open_hotkeys_dialog, primary=False,
                     width=38, height=34).pack(side="right", padx=(0, 8))
 
         left_info = self.frame(top, "bg")
         left_info.pack(side="left")
         if self.cfg["is_host"]:
-            self.label(left_info, "👑 режим хоста", 13, True, color="accent").pack(side="left", padx=(0, 10))
+            self.label(left_info, self._tr("host_badge"), 13, True, color="accent").pack(
+                side="left", padx=(0, 10))
         ram_now = cfgmod.effective_ram_mb(self.cfg)
-        ram_tag = "Авто-RAM" if self.cfg.get("auto_ram", True) else "RAM"
+        ram_tag = self._tr("auto_ram_tag") if self.cfg.get("auto_ram", True) else self._tr("ram_tag")
         self.label(
             left_info,
-            f"{ram_tag}: {ram_now} МБ • {self.cfg.get('jvm_preset', 'G1GC')}",
+            f"{ram_tag}: {ram_now} {self._tr('mb_unit')} • {self.cfg.get('jvm_preset', 'G1GC')}",
             12, color="subtext",
         ).pack(side="left")
 
         center = self.frame(root, "bg")
         center.pack(expand=True)
         self.label(center, "botyaraMC", 56, True, "accent").pack()
-        self.label(center, f"Привет, {self.cfg['nickname']}! 👋", 18, color="subtext").pack(pady=(0, 8))
+        self.greeting_lbl = self.label(center, self._greeting, 18, color="subtext")
+        self.greeting_lbl.pack(pady=(2, 10))
+
+        # Быстрое переключение сервера прямо на главном экране (если серверов несколько)
+        self.server_title_lbl = None
+        self._main_srv_om = None
+        self._main_srv_map = {}
+        servers = self.cfg.get("servers") or []
+        if len(servers) > 1:
+            srv_row = self.frame(center, "bg")
+            srv_row.pack(pady=(0, 6))
+
+            def _on_switch_main_srv(chosen):
+                if self.playing:
+                    return
+                s = self._main_srv_map.get(chosen)
+                if not s:
+                    return
+                cfgmod.add_or_select_server(self.cfg, s["host"], s["port"])
+                cfgmod.save(self.cfg)
+                self._last_manifest = cfgmod.load_cache(s["id"])
+                self._status = ""
+                self.refresh_download_plan(manual=True)
+
+            self._main_srv_om = self.option_menu(srv_row, values=["—"], command=_on_switch_main_srv, width=320)
+            self._main_srv_om.pack()
+            self._refresh_main_server_header()
+        else:
+            active_s = cfgmod.active_server(self.cfg)
+            init_srv_title = f"🌐 {active_s['name']}" if (active_s and active_s.get("name")) else ""
+            self.server_title_lbl = self.label(center, init_srv_title, 14, True, color="text")
+            if init_srv_title:
+                self.server_title_lbl.pack(pady=(0, 4))
 
         self.badge_lbl = self.label(center, self._server_badge_text, 13, color="subtext")
         self.badge_lbl.pack(pady=(0, 20))
 
         self.play_btn = self.button(
             center, self._play_btn_text, self.on_play,
-            width=370, height=68,
+            width=390, height=68,
             font=ctk.CTkFont(size=20, weight="bold"),
         )
         self.play_btn.pack()
+        self._bind_play_hover(self.play_btn)
         if self.playing:
             self.play_btn.configure(state="disabled")
 
-        self.progress = ctk.CTkProgressBar(center, width=400)
+        # #9: Прогрессбар скрыт по умолчанию и появляется только во время запуска игры
+        self.progress_holder = self.frame(center, "bg")
+        self.progress_holder.pack(pady=(16, 0))
+        self.progress = ctk.CTkProgressBar(self.progress_holder, width=400)
         self.T(self.progress, fg_color="surface", progress_color="accent")
         self.progress.set(self._prog)
-        self.progress.pack(pady=(24, 8))
+        if self.playing:
+            self.progress.pack(pady=(6, 8))
 
-        self.status_lbl = self.label(center, self._status, 14, color="subtext", wraplength=660)
-        self.status_lbl.pack()
+        self.status_lbl = self.label(center, self._status, 14, color="subtext", wraplength=700)
+        self.status_lbl.pack(pady=(6, 0))
 
-        bottom = self.frame(root, "bg")
-        bottom.pack(side="bottom", fill="x", padx=22, pady=(0, 12))
-        self.label(
-            bottom,
-            "Enter — играть  •  F5 — обновить размер  •  Ctrl+O — папки  •  Ctrl+L — лог  •  F1 — все хоткеи",
-            11, color="subtext",
-        ).pack(side="left")
+        # #15: Нижняя строка подсказок хоткеев убрана по запросу (хоткеи доступны по кнопке ⌨ / F1)
         return root
+
+    def _show_progress_bar(self, visible):
+        try:
+            if not hasattr(self, "progress") or not self.progress.winfo_exists():
+                return
+            if visible:
+                if not self.progress.winfo_manager():
+                    self.progress.pack(pady=(6, 8))
+            else:
+                if self.progress.winfo_manager():
+                    self.progress.pack_forget()
+        except Exception:
+            pass
 
     def _set_status(self, text):
         self._status = text
@@ -611,6 +848,38 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _refresh_main_server_header(self, fallback_name=""):
+        servers = self.cfg.get("servers") or []
+        om = getattr(self, "_main_srv_om", None)
+        if om is not None and om.winfo_exists() and len(servers) > 1:
+            self._main_srv_map.clear()
+            labels = []
+            cur_lbl = None
+            for s in servers:
+                lb = self._server_label(s)
+                if lb in self._main_srv_map:
+                    lb = f"{lb} [{s['id'][-4:]}]"
+                self._main_srv_map[lb] = s
+                labels.append(lb)
+                if s.get("id") == self.cfg.get("active_server_id"):
+                    cur_lbl = lb
+            om.configure(values=labels)
+            if cur_lbl:
+                om.set(cur_lbl)
+            return
+
+        lbl = getattr(self, "server_title_lbl", None)
+        if lbl is not None and lbl.winfo_exists():
+            active_s = cfgmod.active_server(self.cfg)
+            sname = ((active_s or {}).get("name") or fallback_name or "").strip()
+            if sname:
+                lbl.configure(text=f"🌐 {sname}")
+                if not lbl.winfo_manager():
+                    lbl.pack(pady=(0, 4), before=self.badge_lbl)
+            else:
+                if lbl.winfo_manager():
+                    lbl.pack_forget()
+
     def _set_badge(self, text):
         self._server_badge_text = text
         try:
@@ -623,16 +892,20 @@ class App(ctk.CTk):
         if self.playing:
             return
         if manual:
-            self._set_status("Обновляем данные с сервера… 🔄")
+            self._set_status(self._tr("status_refreshing"))
 
         def work():
             cfg = self.cfg
             host, port = cfg.get("sync_host", ""), cfg.get("sync_port", DEFAULT_PORT)
+            srv_id = cfg.get("active_server_id") or None
             if not host:
                 return
             try:
                 mf = sync.fetch_manifest(host, port)
-                cfgmod.save_cache(mf)
+                if mf.get("server_name"):
+                    if cfgmod.update_server_name(cfg, mf["server_name"], server_id=srv_id):
+                        cfgmod.save(cfg)
+                cfgmod.save_cache(mf, server_id=srv_id)
                 self._last_manifest = mf
                 mc_dir = mc.find_minecraft_dir(cfg.get("mc_dir", ""))
                 plan = sync.plan_sync(
@@ -642,49 +915,60 @@ class App(ctk.CTk):
                 )
                 self.post(_apply_plan, mf, plan, True)
             except Exception:
-                cached = cfgmod.load_cache()
+                cached = cfgmod.load_cache(server_id=srv_id)
+                self._last_manifest = cached
                 self.post(_apply_plan, cached, None, False)
 
         def _apply_plan(mf, plan, online):
             if self.playing:
                 return
+            lang = self._lang()
             if mf:
+                self._refresh_main_server_header(fallback_name=mf.get("server_name", ""))
                 parts = [f"Minecraft {mf['mc_version']}", mf["loader"]]
                 if mf.get("java_version"):
                     parts.append(f"Java {mf['java_version']}")
-                parts.append(f"модов: {len(mf.get('mods', []))}")
+                parts.append(self._tr("badge_mods", n=len(mf.get("mods", []))))
                 if mf.get("resourcepacks"):
-                    parts.append(f"РП: {len(mf['resourcepacks'])}")
+                    parts.append(self._tr("badge_rp", n=len(mf["resourcepacks"])))
                 if mf.get("mods_hidden"):
-                    parts.append("🕵 скрыты")
+                    parts.append(self._tr("badge_hidden"))
                 self._set_badge("  •  ".join(parts))
+            else:
+                self._refresh_main_server_header()
+                self._set_badge("")
 
             if online and plan is not None:
                 tb = plan["total_bytes"]
                 if tb > 0:
-                    sz = sync.format_size(tb)
-                    self._set_play_text(f"▶  ИГРАТЬ  •  Скачать {sz}")
+                    sz = sync.format_size(tb, lang=lang)
+                    self._set_play_text(self._tr("play_btn_dl", size=sz))
                     if manual or not self._status:
-                        self._set_status(
-                            f"Нужно докачать {sz} (модов: {plan['mods_count']}, ресурспаков: {plan['rp_count']}) 📦"
-                        )
+                        self._set_status(self._tr(
+                            "status_need_dl",
+                            size=sz,
+                            mods=plan["mods_count"],
+                            rp=plan["rp_count"],
+                        ))
                 elif plan["total_files"] > 0:
-                    self._set_play_text("▶  ИГРАТЬ  •  Обновить файлы")
+                    self._set_play_text(self._tr("play_btn_update"))
                 else:
-                    self._set_play_text("▶  ИГРАТЬ")
+                    self._set_play_text(self._tr("play_btn"))
                     if manual:
-                        self._set_status("Все моды и ресурспаки уже скачаны ✨")
+                        self._set_status(self._tr("status_up_to_date"))
             else:
-                self._set_play_text("▶  ИГРАТЬ")
+                self._set_play_text(self._tr("play_btn"))
                 if manual:
-                    self._set_status("Сервер сейчас не в сети — запуск пойдёт из локального кэша 📡")
+                    self._set_status(self._tr("status_offline_cache"))
 
         threading.Thread(target=work, daemon=True).start()
 
     def _play_done(self):
         self.playing = False
+        self._show_progress_bar(False)
         try:
             self.play_btn.configure(state="normal")
+            self._paint_play_button_color()
         except Exception:
             pass
         self.refresh_download_plan(manual=False)
@@ -693,6 +977,9 @@ class App(ctk.CTk):
         if self.playing:
             return
         self.playing = True
+        self._prog = 0.0
+        self._show_progress_bar(True)
+        self._set_progress(0.02)
         try:
             self.play_btn.configure(state="disabled")
         except Exception:
@@ -701,34 +988,45 @@ class App(ctk.CTk):
 
     def _play_worker(self):
         P = self.post
+        lang = self._lang()
         try:
             cfg = self.cfg
             host, port = cfg["sync_host"], cfg["sync_port"]
-            P(self._set_status, "Подключаемся к серверу… 🔌")
-            P(self._set_progress, 0.03)
+            srv_id = cfg.get("active_server_id") or None
+            P(self._set_status, i18n.tr(lang, "status_connecting"))
+            P(self._set_progress, 0.04)
             manifest = None
-            try:
-                manifest = sync.fetch_manifest(host, port)
-            except Exception:
-                log.warning("sync-сервер недоступен по %s:%s, ищем заново", host, port)
+            if host:
+                try:
+                    manifest = sync.fetch_manifest(host, port)
+                except Exception:
+                    log.warning("sync-сервер недоступен по %s:%s, ищем заново", host, port)
             if manifest is None:
-                found = discovery.discover(2.0)
+                found = discovery.discover_full(2.0)
                 if found:
+                    fh, fp, fname = found
                     try:
-                        manifest = sync.fetch_manifest(*found)
-                        host, port = found
-                        cfg["sync_host"], cfg["sync_port"] = host, port
+                        manifest = sync.fetch_manifest(fh, fp)
+                        host, port = fh, fp
+                        entry = cfgmod.add_or_select_server(
+                            cfg, host, port,
+                            name=manifest.get("server_name") or fname or "",
+                        )
+                        srv_id = entry["id"]
                         cfgmod.save(cfg)
                     except Exception:
                         log.exception("найденный сервер не ответил")
             live = manifest is not None
             if live:
-                cfgmod.save_cache(manifest)
+                if manifest.get("server_name"):
+                    if cfgmod.update_server_name(cfg, manifest["server_name"], server_id=srv_id):
+                        cfgmod.save(cfg)
+                cfgmod.save_cache(manifest, server_id=srv_id)
                 self._last_manifest = manifest
             else:
-                manifest = cfgmod.load_cache()
+                manifest = cfgmod.load_cache(server_id=srv_id)
             if manifest is None:
-                P(self._set_status, "Сервер недоступен 😕 Проверь Radmin VPN и адрес в настройках.")
+                P(self._set_status, i18n.tr(lang, "status_unreachable"))
                 return
 
             mc_dir = mc.find_minecraft_dir(cfg.get("mc_dir", ""))
@@ -739,9 +1037,12 @@ class App(ctk.CTk):
                     server_mods_dir=cfg["server_mods_dir"],
                 )
                 if plan["total_bytes"] > 0:
-                    P(self._set_status, f"Скачиваем {sync.format_size(plan['total_bytes'])}… 📥")
+                    P(self._set_status, i18n.tr(
+                        lang, "status_downloading",
+                        size=sync.format_size(plan["total_bytes"], lang=lang),
+                    ))
                 else:
-                    P(self._set_status, "Проверяем моды и ресурспаки… ✨")
+                    P(self._set_status, i18n.tr(lang, "status_checking_mods"))
 
                 ok = sync.sync_all(
                     host, port, manifest, mc_dir,
@@ -749,11 +1050,15 @@ class App(ctk.CTk):
                     server_mods_dir=cfg["server_mods_dir"],
                     on_progress=lambda f: P(self._set_progress, 0.05 + f * 0.40),
                     on_status=lambda s: P(self._set_status, s),
+                    lang=lang,
                 )
                 if not ok:
                     log.warning("синхронизация прошла не полностью")
 
-            P(self._set_status, f"Подготавливаем Minecraft {manifest['mc_version']} ({manifest['loader']})… ☕")
+            P(self._set_status, i18n.tr(
+                lang, "status_preparing_mc",
+                ver=manifest["mc_version"], loader=manifest["loader"],
+            ))
             vid = mc.ensure_version(
                 mc_dir, manifest["mc_version"], manifest["loader"],
                 on_frac=lambda f: P(self._set_progress, 0.45 + f * 0.45),
@@ -761,9 +1066,11 @@ class App(ctk.CTk):
                 server_java_version=manifest.get("java_version"),
             )
 
-            P(self._set_status, "Запускаем игру и ждём окно… 🚀")
+            P(self._set_status, i18n.tr(lang, "status_launching"))
             P(self._set_progress, 0.95)
             srv = manifest.get("server") or {}
+            client_folder = manifest.get("client_folder", "")
+            game_dir = cfgmod.resolve_game_dir(mc_dir, client_folder)
             log_path = cfgmod.config_dir() / "game.log"
             start_time = time.time()
             ram_mb = cfgmod.effective_ram_mb(cfg)
@@ -774,11 +1081,13 @@ class App(ctk.CTk):
                 ram_mb, log_path,
                 cfg=cfg,
                 server_java_version=manifest.get("java_version"),
+                auto_join=bool(srv.get("auto_join", True)),
+                client_folder=client_folder,
             )
 
             def _on_game_ready():
                 P(self._set_progress, 1.0)
-                P(self._set_status, "Игра запущена! Удачного геймплея 🎮")
+                P(self._set_status, i18n.tr(lang, "status_game_ready"))
 
             rc, timed_out = mc.monitor_launch(
                 proc, log_path,
@@ -786,43 +1095,63 @@ class App(ctk.CTk):
                 on_ready=_on_game_ready,
             )
 
-            full_log, has_cr, _ = crash.collect_session_log(mc_dir, log_path, start_time)
+            full_log, has_cr, _ = crash.collect_session_log(game_dir, log_path, start_time, lang=lang)
             if crash.is_crash(rc, full_log, has_crash_file=has_cr, timed_out=timed_out):
-                report = crash.parse_crash(full_log, exit_code=rc, timed_out=timed_out)
-                P(self._set_status, f"Упс: {report['title']}")
+                report = crash.parse_crash(full_log, exit_code=rc, timed_out=timed_out, lang=lang)
+                P(self._set_status, i18n.tr(lang, "status_crash_prefix", title=report["title"]))
                 P(self._set_progress, 0.0)
                 P(self._open_crash_dialog, report, full_log, manifest)
             else:
-                P(self._set_status, "Игра закрыта. Заходи ещё! 😊")
+                P(self._set_status, i18n.tr(lang, "status_game_closed"))
                 P(self._set_progress, 0.0)
         except Exception as e:
             log.exception("запуск не удался")
-            P(self._set_status, f"Ошибка запуска: {e} 😕 (подробности в launcher.log)")
+            P(self._set_status, i18n.tr(lang, "status_launch_err", err=e))
             P(self._set_progress, 0.0)
         finally:
             P(self._play_done)
 
-    # ------------------------------------------------------------ быстрое открытие папок (#5)
+    # ============================================================ БЫСТРОЕ ОТКРЫТИЕ ПАПОК (#16)
     def _open_folders_dialog(self):
-        dlg = self._make_dialog("📂 Быстрое открытие папок", width=460, height=430)
+        mc_dir = mc.find_minecraft_dir(self.cfg.get("mc_dir", ""))
+        client_folder = (self._last_manifest or {}).get("client_folder", "")
+        game_dir = cfgmod.resolve_game_dir(mc_dir, client_folder)
+
+        has_host = bool(self.cfg.get("is_host") and self.cfg.get("server_mods_dir"))
+        dlg_h = 560 if has_host else 520
+        dlg = self._make_dialog(
+            self._tr("folders_title"),
+            width=540, height=dlg_h,
+            min_w=500, min_h=dlg_h - 20,
+        )
         card = self.frame(dlg, "panel", corner_radius=16)
         card.pack(fill="both", expand=True, padx=18, pady=18)
 
-        self.label(card, "📂 Какую папку открыть?", 20, True).pack(anchor="w", padx=20, pady=(16, 2))
-        self.label(card, "Нажми мышкой или клавишу 1–6 на клавиатуре", 12, color="subtext").pack(
+        # Сначала упаковываем кнопку «Закрыть» снизу, чтобы она НИКОГДА не обрезалась!
+        bottom_bar = self.frame(card, "panel")
+        bottom_bar.pack(side="bottom", fill="x", padx=20, pady=(10, 16))
+        self.button(
+            bottom_bar, self._tr("folders_close"), dlg.destroy,
+            primary=False, width=150, height=38,
+        ).pack()
+
+        self.label(card, self._tr("folders_heading"), 20, True).pack(anchor="w", padx=20, pady=(16, 2))
+        self.label(card, self._tr("folders_sub"), 12, color="subtext").pack(
             anchor="w", padx=20, pady=(0, 12))
 
-        mc_dir = mc.find_minecraft_dir(self.cfg.get("mc_dir", ""))
         items = [
-            ("1", "📁  .minecraft — корневая папка игры", mc_dir),
-            ("2", "🧩  mods — установленные моды", mc_dir / "mods"),
-            ("3", "🎨  resourcepacks — ресурспаки", mc_dir / "resourcepacks"),
-            ("4", "📸  screenshots — твои скриншоты", mc_dir / "screenshots"),
-            ("5", "💥  crash-reports — отчёты о сбоях", mc_dir / "crash-reports"),
-            ("6", "🛠  Конфиг и логи botyaraMC", cfgmod.config_dir()),
+            ("1", self._tr("folder_mc", name=game_dir.name), game_dir),
+            ("2", self._tr("folder_mods"), game_dir / "mods"),
+            ("3", self._tr("folder_rp"), game_dir / "resourcepacks"),
+            ("4", self._tr("folder_screens"), game_dir / "screenshots"),
+            ("5", self._tr("folder_crashes"), game_dir / "crash-reports"),
+            ("6", self._tr("folder_cfg"), cfgmod.config_dir()),
         ]
-        if self.cfg.get("is_host") and self.cfg.get("server_mods_dir"):
-            items.append(("7", "👑  Моды Minecraft-сервера", Path(self.cfg["server_mods_dir"])))
+        if has_host:
+            items.append(("7", self._tr("folder_srv_mods"), Path(self.cfg["server_mods_dir"])))
+
+        list_box = self.frame(card, "panel")
+        list_box.pack(fill="both", expand=True, padx=20)
 
         def go(target_path):
             try:
@@ -834,32 +1163,31 @@ class App(ctk.CTk):
 
         for key_num, title_str, p in items:
             btn = self.button(
-                card, f"[{key_num}]   {title_str}",
+                list_box, f"[{key_num}]   {title_str}",
                 command=partial(go, p),
                 primary=False, height=38, anchor="w",
             )
-            btn.pack(fill="x", padx=20, pady=4)
+            btn.pack(fill="x", pady=4)
             dlg.bind(key_num, lambda _e, path=p: go(path))
 
-        self.button(card, "Закрыть (Esc)", dlg.destroy, primary=False, width=130, height=34).pack(
-            side="bottom", pady=(8, 14))
-
-    # ------------------------------------------------------------ шпаргалка хоткеев (#6)
+    # ============================================================ ШПАРГАЛКА ХОТКЕЕВ
     def _open_hotkeys_dialog(self):
-        dlg = self._make_dialog("⌨ Горячие клавиши", width=500, height=400)
+        dlg = self._make_dialog(self._tr("hk_title"), width=540, height=420, min_w=500, min_h=390)
         card = self.frame(dlg, "panel", corner_radius=16)
         card.pack(fill="both", expand=True, padx=18, pady=18)
 
-        self.label(card, "⌨ Горячие клавиши botyaraMC", 20, True).pack(anchor="w", padx=22, pady=(16, 12))
+        self.button(card, self._tr("hk_ok"), dlg.destroy, width=160, height=38).pack(
+            side="bottom", pady=(8, 16))
+
+        self.label(card, self._tr("hk_heading"), 20, True).pack(anchor="w", padx=22, pady=(16, 12))
         shortcuts = [
-            ("Enter / Ctrl + P", "Запустить игру (на главном экране)"),
-            ("F5 / Ctrl + R", "Перепроверить сервер и суммарный размер загрузки"),
-            ("Ctrl + O", "Быстрое открытие папок (.minecraft, mods, screenshots…)"),
-            ("Ctrl + L", "Открыть полный лог последнего запуска (game.log)"),
-            ("Ctrl + ,", "Открыть ⚙ Настройки"),
-            ("Ctrl + S", "Сохранить изменения в ⚙ Настройках"),
-            ("Esc", "Закрыть окно / вернуться из Настроек без сохранения"),
-            ("F1", "Показать эту подсказку"),
+            ("Enter / Ctrl + P", self._tr("hk_play")),
+            ("F5 / Ctrl + R", self._tr("hk_refresh")),
+            ("Ctrl + O", self._tr("hk_folders")),
+            ("Ctrl + L", self._tr("hk_log")),
+            ("Ctrl + ,", self._tr("hk_settings")),
+            ("Esc", self._tr("hk_esc")),
+            ("F1", self._tr("hk_f1")),
         ]
         grid = self.frame(card, "panel")
         grid.pack(fill="both", expand=True, padx=22)
@@ -868,61 +1196,57 @@ class App(ctk.CTk):
             k_lbl.grid(row=idx, column=0, sticky="w", pady=5, padx=(0, 18))
             self.label(grid, desc, 13, color="text").grid(row=idx, column=1, sticky="w", pady=5)
 
-        self.button(card, "Понятно 👍", dlg.destroy, width=150, height=36).pack(
-            side="bottom", pady=(8, 16))
-
-    # ------------------------------------------------------------ краш-репорт и окно логов (#13)
+    # ============================================================ КРАШ-РЕПОРТ И ЛОГИ
     def _open_latest_game_log(self):
-        mc_dir = mc.find_minecraft_dir(self.cfg.get("mc_dir", ""))
         log_path = cfgmod.config_dir() / "game.log"
         if not log_path.is_file():
             log_path = cfgmod.config_dir() / "launcher.log"
-        text = crash._read_text_safe(log_path) if log_path.is_file() else "(Логов пока нет — запусти игру хотя бы раз!)"
+        text = crash._read_text_safe(log_path) if log_path.is_file() else self._tr("log_empty_yet")
         mf = self._last_manifest or {}
         self._open_log_window(
             text,
             mc_version=mf.get("mc_version", ""),
             loader=mf.get("loader", ""),
             exit_code=None,
-            header_title=f"📄 Лог ({log_path.name})",
+            header_title=f"{self._tr('top_log')} ({log_path.name})",
         )
 
     def _open_crash_dialog(self, report, full_log, manifest=None):
         mf = manifest or self._last_manifest or {}
-        dlg = self._make_dialog("💥 Игра крашнулась!", width=640, height=500)
+        dlg = self._make_dialog(self._tr("crash_win_title"), width=660, height=520, min_w=580, min_h=460)
         card = self.frame(dlg, "panel", corner_radius=16)
         card.pack(fill="both", expand=True, padx=18, pady=18)
 
-        self.label(card, "💥 Упс, игра крашнулась!", 22, True, color="danger").pack(
+        bar = self.frame(card, "panel")
+        bar.pack(side="bottom", fill="x", padx=22, pady=(8, 16))
+
+        self.label(card, self._tr("crash_heading"), 22, True, color="danger").pack(
             anchor="w", padx=22, pady=(18, 4))
-        code_txt = f"Код выхода: {report['exit_code']}" if report.get("exit_code") is not None else ""
+        code_txt = self._tr("crash_exit_code", code=report["exit_code"]) if report.get("exit_code") is not None else ""
         self.label(card, f"{report['title']}   {code_txt}", 15, True, color="text",
-                   wraplength=580).pack(anchor="w", padx=22, pady=(0, 8))
+                   wraplength=600).pack(anchor="w", padx=22, pady=(0, 8))
 
         body = self.scroll_frame(card, "bg", height=250)
-        body.pack(fill="both", expand=True, padx=22, pady=(0, 10))
+        body.pack(fill="both", expand=True, padx=22, pady=(0, 8))
 
-        self.label(body, report["summary"], 13, color="text", wraplength=540).pack(
+        self.label(body, report["summary"], 13, color="text", wraplength=560).pack(
             anchor="w", padx=12, pady=(10, 8))
 
         if report.get("exception"):
-            self.label(body, "Техническая причина:", 12, True, color="subtext").pack(anchor="w", padx=12)
-            self.label(body, report["exception"], 12, color="danger", wraplength=540).pack(
+            self.label(body, self._tr("crash_tech_reason"), 12, True, color="subtext").pack(anchor="w", padx=12)
+            self.label(body, report["exception"], 12, color="danger", wraplength=560).pack(
                 anchor="w", padx=12, pady=(2, 8))
 
         if report.get("suspected_mods"):
-            self.label(body, "Подозрительные моды / файлы:", 12, True, color="subtext").pack(
+            self.label(body, self._tr("crash_suspects"), 12, True, color="subtext").pack(
                 anchor="w", padx=12)
             self.label(body, "• " + ", ".join(report["suspected_mods"]), 13, color="accent",
-                       wraplength=540).pack(anchor="w", padx=12, pady=(2, 8))
+                       wraplength=560).pack(anchor="w", padx=12, pady=(2, 8))
 
-        self.label(body, "Что можно сделать:", 12, True, color="subtext").pack(anchor="w", padx=12)
+        self.label(body, self._tr("crash_what_to_do"), 12, True, color="subtext").pack(anchor="w", padx=12)
         for tip in report.get("solutions", []):
-            self.label(body, f"• {tip}", 13, color="text", wraplength=540).pack(
+            self.label(body, f"• {tip}", 13, color="text", wraplength=560).pack(
                 anchor="w", padx=12, pady=2)
-
-        bar = self.frame(card, "panel")
-        bar.pack(side="bottom", fill="x", padx=22, pady=(6, 16))
 
         def open_full():
             self._open_log_window(
@@ -939,22 +1263,36 @@ class App(ctk.CTk):
                 dlg.destroy()
             self.on_play()
 
-        self.button(bar, "📄 Посмотреть полный лог", open_full, width=220, height=40).pack(side="left")
-        self.button(bar, "Закрыть", dlg.destroy, primary=False, width=105, height=40).pack(side="right")
-        self.button(bar, "🔄 Перезапуск", restart, primary=False, width=140, height=40).pack(
+        self.button(bar, self._tr("crash_view_full"), open_full, width=220, height=40).pack(side="left")
+        self.button(bar, self._tr("crash_close"), dlg.destroy, primary=False, width=110, height=40).pack(side="right")
+        self.button(bar, self._tr("crash_restart"), restart, primary=False, width=145, height=40).pack(
             side="right", padx=8)
 
     def _open_log_window(self, full_log, mc_version="", loader="", exit_code=None,
-                         header_title="📄 Полный лог игры", parent_crash_dlg=None):
-        dlg = self._make_dialog("Полный лог — botyaraMC", width=820, height=580)
+                         header_title=None, parent_crash_dlg=None):
+        dlg = self._make_dialog(self._tr("log_win_title"), width=840, height=580, min_w=680, min_h=480)
         card = self.frame(dlg, "panel", corner_radius=16)
         card.pack(fill="both", expand=True, padx=16, pady=16)
+
+        bar = self.frame(card, "panel")
+        bar.pack(side="bottom", fill="x", padx=20, pady=(4, 16))
+
+        share_row = self.frame(card, "panel")
+        share_row.pack(side="bottom", fill="x", padx=20, pady=(0, 4))
+        info_lbl = self.label(share_row, "", 13, color="subtext")
+        info_lbl.pack(side="left")
+        last_url = [""]
+        open_url_btn = self.button(
+            share_row, self._tr("log_open_browser"),
+            command=lambda: webbrowser.open(last_url[0]) if last_url[0] else None,
+            primary=False, width=175, height=28,
+        )
 
         hdr = self.frame(card, "panel")
         hdr.pack(fill="x", padx=20, pady=(16, 6))
         lines_cnt = len((full_log or "").splitlines())
-        self.label(hdr, header_title, 18, True).pack(side="left")
-        self.label(hdr, f"{lines_cnt} строк", 12, color="subtext").pack(side="right")
+        self.label(hdr, header_title or self._tr("log_default_hdr"), 18, True).pack(side="left")
+        self.label(hdr, self._tr("log_lines", n=lines_cnt), 12, color="subtext").pack(side="right")
 
         txt = ctk.CTkTextbox(
             card,
@@ -965,32 +1303,17 @@ class App(ctk.CTk):
         self.T(txt, fg_color="bg", text_color="text", border_color="border",
                scrollbar_button_color="surface_hover", scrollbar_button_hover_color="accent")
         txt.pack(fill="both", expand=True, padx=20, pady=(4, 8))
-        txt.insert("1.0", full_log or "(Пусто)")
+        txt.insert("1.0", full_log or self._tr("log_empty"))
         txt.see("end")
         txt.configure(state="disabled")
 
-        share_row = self.frame(card, "panel")
-        share_row.pack(fill="x", padx=20, pady=(0, 4))
-        info_lbl = self.label(share_row, "", 13, color="subtext")
-        info_lbl.pack(side="left")
-        last_url = [""]
-        open_url_btn = self.button(
-            share_row, "Открыть в браузере 🌐",
-            command=lambda: webbrowser.open(last_url[0]) if last_url[0] else None,
-            primary=False, width=170, height=28,
-        )
-
-        # Нижняя панель: Скопировать, Поделиться (mclo.gs), Перезапуск, Закрыть
-        bar = self.frame(card, "panel")
-        bar.pack(side="bottom", fill="x", padx=20, pady=(4, 16))
-
         def do_copy():
             self._copy_clipboard(full_log or "")
-            self.msg(info_lbl, "Полный лог скопирован в буфер обмена 📋", "success")
+            self.msg(info_lbl, self._tr("log_copied"), "success")
 
         def do_share():
-            share_btn.configure(state="disabled", text="Отправляем… ⏳")
-            self.msg(info_lbl, "Загружаем лог на https://mclo.gs… 🌐", "subtext")
+            share_btn.configure(state="disabled", text=self._tr("log_sharing"))
+            self.msg(info_lbl, self._tr("log_uploading"), "subtext")
 
             def work():
                 try:
@@ -999,6 +1322,7 @@ class App(ctk.CTk):
                         mc_version=mc_version,
                         loader=loader,
                         exit_code=exit_code,
+                        lang=self._lang(),
                     )
                     self.post(done_ok, res)
                 except Exception as e:
@@ -1008,18 +1332,18 @@ class App(ctk.CTk):
             def done_ok(res):
                 if not dlg.winfo_exists():
                     return
-                share_btn.configure(state="normal", text="🔗 Поделиться")
+                share_btn.configure(state="normal", text=self._tr("log_share_btn"))
                 url = res["url"]
                 last_url[0] = url
                 self._copy_clipboard(url)
-                self.msg(info_lbl, f"Ссылка скопирована: {url} 🎉", "success")
+                self.msg(info_lbl, self._tr("log_shared_ok", url=url), "success")
                 open_url_btn.pack(side="right")
 
             def done_err(err_msg):
                 if not dlg.winfo_exists():
                     return
-                share_btn.configure(state="normal", text="🔗 Поделиться")
-                self.msg(info_lbl, f"Не вышло отправить: {err_msg}", "danger")
+                share_btn.configure(state="normal", text=self._tr("log_share_btn"))
+                self.msg(info_lbl, self._tr("log_shared_err", err=err_msg), "danger")
 
             threading.Thread(target=work, daemon=True).start()
 
@@ -1030,28 +1354,27 @@ class App(ctk.CTk):
                 dlg.destroy()
             self.on_play()
 
-        self.button(bar, "📋 Скопировать", do_copy, primary=False, width=150, height=40).pack(
+        self.button(bar, self._tr("log_copy_btn"), do_copy, primary=False, width=155, height=40).pack(
             side="left", padx=(0, 8))
-        share_btn = self.button(bar, "🔗 Поделиться", do_share, primary=True, width=165, height=40)
+        share_btn = self.button(bar, self._tr("log_share_btn"), do_share, primary=True, width=190, height=40)
         share_btn.pack(side="left")
 
-        self.button(bar, "✖ Закрыть", dlg.destroy, primary=False, width=120, height=40).pack(
+        self.button(bar, self._tr("log_close_btn"), dlg.destroy, primary=False, width=120, height=40).pack(
             side="right")
-        self.button(bar, "🔄 Перезапуск", do_restart, primary=False, width=150, height=40).pack(
+        self.button(bar, self._tr("crash_restart"), do_restart, primary=False, width=150, height=40).pack(
             side="right", padx=8)
 
-    # ------------------------------------------------------------ редактор JVM-пресетов (#8)
+    # ============================================================ РЕДАКТОР JVM-ПРЕСЕТОВ
     def _open_presets_editor(self, custom_presets_draft, current_preset_var, on_updated):
-        dlg = self._make_dialog("⚙ Редактор JVM-пресетов", width=660, height=490)
+        dlg = self._make_dialog(self._tr("pe_title"), width=680, height=500, min_w=600, min_h=450)
         card = self.frame(dlg, "panel", corner_radius=16)
         card.pack(fill="both", expand=True, padx=16, pady=16)
 
-        self.label(card, "⚙ JVM-пресеты", 20, True).pack(anchor="w", padx=20, pady=(16, 2))
-        self.label(
-            card,
-            "Выбери готовый пресет для редактирования или создай собственный набор флагов.",
-            12, color="subtext",
-        ).pack(anchor="w", padx=20, pady=(0, 10))
+        bar = self.frame(card, "panel")
+        bar.pack(side="bottom", fill="x", padx=20, pady=(8, 16))
+
+        self.label(card, self._tr("pe_heading"), 20, True).pack(anchor="w", padx=20, pady=(16, 2))
+        self.label(card, self._tr("pe_sub"), 12, color="subtext").pack(anchor="w", padx=20, pady=(0, 10))
 
         def merged():
             m = dict(jvm.BUILTIN_PRESETS)
@@ -1065,10 +1388,10 @@ class App(ctk.CTk):
         om = self.option_menu(top_row, values=list(merged().keys()), variable=sel_var, width=220)
         om.pack(side="left")
 
-        e_new = self.entry(top_row, width=190, height=32, placeholder_text="Имя нового пресета…")
+        e_new = self.entry(top_row, width=200, height=32, placeholder_text=self._tr("pe_new_placeholder"))
         e_new.pack(side="left", padx=(12, 6))
 
-        desc_lbl = self.label(card, "", 12, color="subtext", wraplength=600)
+        desc_lbl = self.label(card, "", 12, color="subtext", wraplength=620)
         desc_lbl.pack(anchor="w", padx=20, pady=(0, 6))
 
         box = ctk.CTkTextbox(card, height=180, corner_radius=10, font=ctk.CTkFont(size=13))
@@ -1084,9 +1407,9 @@ class App(ctk.CTk):
             if nm not in all_p:
                 nm = "G1GC"
                 sel_var.set(nm)
-            desc = jvm.PRESET_DESCRIPTIONS.get(nm, "Пользовательский JVM-пресет")
+            desc = jvm.preset_description(nm, lang=self._lang())
             if nm in jvm.BUILTIN_PRESETS and nm in custom_presets_draft:
-                desc += " (изменён тобой)"
+                desc += self._tr("pe_modified")
             desc_lbl.configure(text=desc)
             box.delete("1.0", "end")
             box.insert("1.0", all_p.get(nm, ""))
@@ -1096,19 +1419,16 @@ class App(ctk.CTk):
         def add_new():
             nm = e_new.get().strip()
             if not nm:
-                return self.msg(status, "Введи название для нового пресета 🙂", "danger")
+                return self.msg(status, self._tr("pe_enter_name"), "danger")
             custom_presets_draft[nm] = box.get("1.0", "end").strip()
             e_new.delete(0, "end")
             vals = list(merged().keys())
             om.configure(values=vals)
             sel_var.set(nm)
             load_selected(nm)
-            self.msg(status, f"Создан пресет «{nm}» ✨", "success")
+            self.msg(status, self._tr("pe_created", name=nm), "success")
 
-        self.button(top_row, "+ Создать", add_new, primary=False, width=100, height=32).pack(side="left")
-
-        bar = self.frame(card, "panel")
-        bar.pack(side="bottom", fill="x", padx=20, pady=(8, 16))
+        self.button(top_row, self._tr("pe_create_btn"), add_new, primary=False, width=110, height=32).pack(side="left")
 
         def save_current_and_close():
             nm = sel_var.get()
@@ -1125,24 +1445,131 @@ class App(ctk.CTk):
             if nm in jvm.BUILTIN_PRESETS:
                 custom_presets_draft.pop(nm, None)
                 load_selected(nm)
-                self.msg(status, f"Пресет «{nm}» сброшен к заводским флагам ↺", "success")
+                self.msg(status, self._tr("pe_reset_ok", name=nm), "success")
             else:
                 custom_presets_draft.pop(nm, None)
                 vals = list(merged().keys())
                 om.configure(values=vals)
                 sel_var.set("G1GC")
                 load_selected("G1GC")
-                self.msg(status, f"Пресет «{nm}» удалён 🗑", "subtext")
+                self.msg(status, self._tr("pe_deleted", name=nm), "subtext")
 
-        self.button(bar, "↺ Сбросить / Удалить", reset_or_delete, primary=False,
-                    width=175, height=38).pack(side="left")
-        self.button(bar, "Применить ✓", save_current_and_close, width=155, height=38).pack(side="right")
-        self.button(bar, "Отмена", dlg.destroy, primary=False, width=105, height=38).pack(
+        self.button(bar, self._tr("pe_reset_btn"), reset_or_delete, primary=False,
+                    width=180, height=38).pack(side="left")
+        self.button(bar, self._tr("pe_apply_btn"), save_current_and_close, width=155, height=38).pack(side="right")
+        self.button(bar, self._tr("pe_cancel_btn"), dlg.destroy, primary=False, width=110, height=38).pack(
             side="right", padx=8)
 
         load_selected()
 
-    # ------------------------------------------------------------ настройки
+    # ============================================================ ДОБАВЛЕНИЕ СЕРВЕРА (#12)
+    def _open_add_server_dialog(self, on_added):
+        dlg = self._make_dialog(self._tr("add_srv_win_title"), width=540, height=340, min_w=500, min_h=320)
+        card = self.frame(dlg, "panel", corner_radius=16)
+        card.pack(fill="both", expand=True, padx=18, pady=18)
+
+        bar = self.frame(card, "panel")
+        bar.pack(side="bottom", fill="x", padx=22, pady=(10, 18))
+
+        self.label(card, self._tr("add_srv_heading"), 20, True).pack(anchor="w", padx=22, pady=(18, 4))
+        self.label(card, self._tr("add_srv_sub"), 12, color="subtext", wraplength=480).pack(
+            anchor="w", padx=22, pady=(0, 14))
+
+        row = self.frame(card, "panel")
+        row.pack(fill="x", padx=22, pady=(0, 8))
+        e_addr = self.entry(row, height=38, placeholder_text="26.12.34.56")
+        e_addr.pack(side="left", fill="x", expand=True)
+
+        e_name = self.entry(card, height=36, placeholder_text=self._tr("add_srv_name_ph"))
+        e_name.pack(fill="x", padx=22, pady=(0, 6))
+
+        msg_lbl = self.label(card, "", 12, color="subtext", wraplength=480)
+        msg_lbl.pack(anchor="w", padx=22)
+
+        def on_disc(_h, _p, sname):
+            if sname and not e_name.get().strip():
+                e_name.insert(0, sname)
+
+        btn_find = self.button(row, self._tr("st_find_btn"), primary=False, width=120, height=38)
+        btn_find.configure(command=lambda: self._autofind(e_addr, msg_lbl, btn_find, on_found=on_disc))
+        btn_find.pack(side="left", padx=(8, 0))
+
+        def do_add():
+            parsed = parse_hostport(e_addr.get())
+            if not parsed:
+                self.msg(msg_lbl, self._tr("st_err_addr"), "danger")
+                return
+            host, port = parsed
+            custom_name = e_name.get().strip()
+            btn_ok.configure(state="disabled")
+            self.msg(msg_lbl, self._tr("wiz_checking"), "subtext")
+
+            def work():
+                try:
+                    mf = sync.fetch_manifest(host, port)
+                    self.post(done, mf)
+                except Exception:
+                    self.post(done, None)
+
+            def done(mf):
+                if not dlg.winfo_exists():
+                    return
+                sname = custom_name or ((mf or {}).get("server_name") or "")
+                entry = cfgmod.add_or_select_server(self.cfg, host, port, name=sname)
+                cfgmod.save(self.cfg)
+                if mf is not None:
+                    cfgmod.save_cache(mf, server_id=entry["id"])
+                    self._last_manifest = mf
+                else:
+                    self._last_manifest = cfgmod.load_cache(server_id=entry["id"])
+                dlg.destroy()
+                on_added()
+
+            threading.Thread(target=work, daemon=True).start()
+
+        e_addr.bind("<Return>", lambda _e: do_add())
+        e_name.bind("<Return>", lambda _e: do_add())
+        btn_ok = self.button(bar, self._tr("add_srv_confirm"), do_add, width=165, height=38)
+        btn_ok.pack(side="right")
+        self.button(bar, self._tr("pe_cancel_btn"), dlg.destroy, primary=False, width=115, height=38).pack(
+            side="right", padx=10)
+        dlg.after(100, e_addr.focus_set)
+
+    # ============================================================ ПОДТВЕРЖДЕНИЕ ВЫХОДА (#13)
+    def _confirm_signout_dialog(self):
+        dlg = self._make_dialog(self._tr("st_signout_confirm_title"), width=520, height=270, min_w=480, min_h=250)
+        card = self.frame(dlg, "panel", corner_radius=16)
+        card.pack(fill="both", expand=True, padx=18, pady=18)
+
+        bar = self.frame(card, "panel")
+        bar.pack(side="bottom", fill="x", padx=22, pady=(10, 18))
+
+        self.label(card, self._tr("st_signout_confirm_title"), 20, True, color="danger").pack(
+            anchor="w", padx=22, pady=(18, 8))
+        self.label(card, self._tr("st_signout_confirm_body"), 13, color="text", wraplength=440).pack(
+            anchor="w", padx=22)
+
+        def do_reset():
+            if dlg.winfo_exists():
+                dlg.destroy()
+            cfgmod.reset_account_and_servers(self.cfg)
+            self._last_manifest = None
+            self._server_badge_text = ""
+            self._status = ""
+            self.draft = {
+                "lang": self._lang(),
+                "nick": "",
+                "theme": self.cfg["theme"],
+                "host": "",
+                "server_name": "",
+            }
+            self.show("wizard", 1)
+
+        self.danger_button(bar, self._tr("st_signout_yes"), do_reset, width=190, height=38).pack(side="right")
+        self.button(bar, self._tr("st_signout_no"), dlg.destroy, primary=False, width=120, height=38).pack(
+            side="right", padx=10)
+
+    # ============================================================ НАСТРОЙКИ (#8, #12, #13, #17, #19, #20, #21)
     def _view_settings(self):
         c = self.cfg
         custom_presets_draft = dict(c.get("custom_jvm_presets") or {})
@@ -1151,20 +1578,34 @@ class App(ctk.CTk):
         card = self.frame(root, "panel", corner_radius=18)
         card.pack(fill="both", expand=True, padx=22, pady=20)
 
+        # #19: Шапка настроек с кнопкой «✕ Закрыть» справа вместо подсказок хоткеев
         hdr = self.frame(card, "panel")
-        hdr.pack(fill="x", padx=24, pady=(16, 6))
-        self.label(hdr, "⚙ Настройки", 24, True).pack(side="left")
-        self.label(hdr, "Ctrl+S — сохранить • Esc — отмена", 12, color="subtext").pack(side="right")
+        hdr.pack(fill="x", padx=24, pady=(16, 8))
+        self.label(hdr, self._tr("st_title"), 24, True).pack(side="left")
 
+        autosave_lbl = self.label(hdr, self._tr("st_autosave_hint"), 12, color="subtext")
+
+        def close_settings():
+            autosave_now()
+            self.show("main")
+
+        self._close_settings_fn = close_settings
+        self.button(
+            hdr, self._tr("st_close"), close_settings,
+            primary=False, width=122, height=34,
+        ).pack(side="right")
+        autosave_lbl.pack(side="right", padx=(0, 14))
+
+        # #17: Без нижней панели Сохранить/Отмена — скролл-область занимает всё пространство карточки!
         sf = self.scroll_frame(card, "panel")
-        sf.pack(fill="both", expand=True, padx=16, pady=(0, 6))
+        sf.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         g = self.frame(sf, "panel")
         g.pack(fill="x", padx=8, pady=4)
         g.grid_columnconfigure(1, weight=1)
 
         def section(r, title):
             self.label(g, title, 15, True, color="accent").grid(
-                row=r, column=0, columnspan=3, sticky="w", pady=(14 if r else 4, 6)
+                row=r, column=0, columnspan=3, sticky="w", pady=(16 if r else 4, 6)
             )
 
         def row_lbl(r, text):
@@ -1172,193 +1613,277 @@ class App(ctk.CTk):
                 row=r, column=0, sticky="w", pady=6, padx=(0, 16)
             )
 
-        # === Секция 1: Профиль и сеть ===
-        section(0, "👤 Профиль и сервер синхронизации")
+        # --- Секция 1: Язык, профиль и мульти-серверы ---
+        section(0, self._tr("st_sec_profile"))
 
-        row_lbl(1, "Ник")
+        # Язык (#6)
+        row_lbl(1, self._tr("st_lang"))
+        lang_labels = {"ru": "Русский", "en": "English"}
+        lang_rev = {v: k for k, v in lang_labels.items()}
+        om_lang = self.option_menu(g, values=["Русский", "English"], width=230)
+        om_lang.set(lang_labels[self._lang()])
+        om_lang.grid(row=1, column=1, sticky="w", pady=4)
+
+        # Ник (#14)
+        row_lbl(2, self._tr("st_nick"))
         e_nick = self.entry(g, height=34)
         e_nick.insert(0, c["nickname"])
-        e_nick.grid(row=1, column=1, columnspan=2, sticky="ew", pady=4)
+        e_nick.grid(row=2, column=1, columnspan=2, sticky="ew", pady=4)
 
-        row_lbl(2, "Тема оформления")
-        om_theme = self.option_menu(g, values=themes.THEME_NAMES, command=self.apply_theme, width=220)
+        # Тема
+        row_lbl(3, self._tr("st_theme"))
+        om_theme = self.option_menu(g, values=themes.THEME_NAMES, width=230)
         om_theme.set(c["theme"])
-        om_theme.grid(row=2, column=1, columnspan=2, sticky="w", pady=4)
+        om_theme.grid(row=3, column=1, sticky="w", pady=4)
 
-        row_lbl(3, "Сервер синхронизации")
-        e_host = self.entry(g, height=34)
+        # Мульти-серверы (#12)
+        row_lbl(4, self._tr("st_active_server"))
+        srv_bar = self.frame(g, "panel")
+        srv_bar.grid(row=4, column=1, columnspan=2, sticky="ew", pady=4)
+
+        srv_label_map = {}  # display_label -> server_dict
+        om_servers = self.option_menu(srv_bar, values=["—"], width=300)
+        om_servers.pack(side="left")
+
+        btn_add_srv = self.button(srv_bar, self._tr("st_srv_add"), primary=False, width=120, height=32)
+        btn_add_srv.pack(side="left", padx=(8, 6))
+        btn_del_srv = self.button(srv_bar, self._tr("st_srv_remove"), primary=False, width=115, height=32)
+        btn_del_srv.pack(side="left")
+
+        row_lbl(5, self._tr("st_srv_addr"))
+        e_host = self.entry(g, height=34, placeholder_text="26.12.34.56")
         e_host.insert(0, self._addr_text())
-        e_host.grid(row=3, column=1, sticky="ew", pady=4)
+        e_host.grid(row=5, column=1, sticky="ew", pady=4)
         m_host = self.label(g, "", 12, color="subtext")
-        find_btn = self.button(g, "🔍 Найти", primary=False, width=105, height=34)
-        find_btn.configure(command=lambda: self._autofind(e_host, m_host, find_btn))
-        find_btn.grid(row=3, column=2, padx=(8, 0))
-        m_host.grid(row=4, column=1, columnspan=2, sticky="w")
+        find_btn = self.button(g, self._tr("st_find_btn"), primary=False, width=125, height=34)
+        find_btn.grid(row=5, column=2, padx=(8, 0))
+        m_host.grid(row=6, column=1, columnspan=2, sticky="w")
 
-        row_lbl(5, "Режим хоста")
-        sw_host = ctk.CTkSwitch(g, text="я хост! 👑 (дублировать моды в папку сервера)")
+        def rebuild_servers_dropdown():
+            srv_label_map.clear()
+            servers = c.get("servers") or []
+            if not servers:
+                empty_lbl = "—"
+                om_servers.configure(values=[empty_lbl])
+                om_servers.set(empty_lbl)
+                btn_del_srv.configure(state="disabled")
+                return
+            labels = []
+            cur_lbl = None
+            for s in servers:
+                lb = self._server_label(s)
+                if lb in srv_label_map:
+                    lb = f"{lb} [{s['id'][-4:]}]"
+                srv_label_map[lb] = s
+                labels.append(lb)
+                if s.get("id") == c.get("active_server_id"):
+                    cur_lbl = lb
+            om_servers.configure(values=labels)
+            om_servers.set(cur_lbl or labels[0])
+            btn_del_srv.configure(state="normal" if len(servers) > 0 else "disabled")
+
+        def on_select_server(chosen_lbl):
+            s = srv_label_map.get(chosen_lbl)
+            if not s:
+                return
+            cfgmod.add_or_select_server(c, s["host"], s["port"])
+            e_host.delete(0, "end")
+            e_host.insert(0, self._addr_text(s["host"], s["port"]))
+            self._last_manifest = cfgmod.load_cache(s["id"])
+            cfgmod.save(c)
+            self.msg(err, "", "subtext")
+            self.msg(autosave_lbl, self._tr("st_saved_ok"), "success")
+
+        om_servers.configure(command=on_select_server)
+
+        def on_added_from_dialog():
+            e_host.delete(0, "end")
+            e_host.insert(0, self._addr_text())
+            rebuild_servers_dropdown()
+            self.msg(err, "", "subtext")
+            self.msg(autosave_lbl, self._tr("st_saved_ok"), "success")
+
+        def on_click_add_server():
+            self._open_add_server_dialog(on_added_from_dialog)
+
+        def on_click_remove_server():
+            cur_id = c.get("active_server_id")
+            if not cur_id:
+                return
+            cfgmod.remove_server(c, cur_id)
+            cfgmod.save(c)
+            e_host.delete(0, "end")
+            e_host.insert(0, self._addr_text())
+            self._last_manifest = cfgmod.load_cache(c.get("active_server_id") or None)
+            rebuild_servers_dropdown()
+            self.msg(autosave_lbl, self._tr("st_saved_ok"), "success")
+
+        btn_add_srv.configure(command=on_click_add_server)
+        btn_del_srv.configure(command=on_click_remove_server)
+        rebuild_servers_dropdown()
+
+        def on_found_in_settings(fh, fp, sname):
+            cfgmod.add_or_select_server(c, fh, fp, name=sname or "")
+            cfgmod.save(c)
+            rebuild_servers_dropdown()
+            self.msg(autosave_lbl, self._tr("st_saved_ok"), "success")
+
+        find_btn.configure(command=lambda: self._autofind(e_host, m_host, find_btn, on_found=on_found_in_settings))
+
+        # Режим хоста
+        row_lbl(7, self._tr("st_host_mode"))
+        sw_host = ctk.CTkSwitch(g, text=self._tr("st_host_switch"))
         self.T(sw_host, fg_color="surface_hover", progress_color="accent", button_color="text",
                button_hover_color="accent_hover", text_color="text")
-        sw_host.grid(row=5, column=1, columnspan=2, sticky="w", pady=4)
+        sw_host.grid(row=7, column=1, columnspan=2, sticky="w", pady=4)
 
-        row_lbl(6, "Папка модов сервера")
-        e_srv = self.entry(g, height=34, placeholder_text="путь к mods у Minecraft-сервера")
+        row_lbl(8, self._tr("st_srv_mods_dir"))
+        e_srv = self.entry(g, height=34, placeholder_text=self._tr("st_srv_mods_ph"))
         e_srv.insert(0, c["server_mods_dir"])
-        e_srv.grid(row=6, column=1, sticky="ew", pady=4)
-        b_srv = self.button(g, "Обзор…", lambda: self._browse_dir(e_srv), primary=False,
-                            width=105, height=34)
-        b_srv.grid(row=6, column=2, padx=(8, 0))
+        e_srv.grid(row=8, column=1, sticky="ew", pady=4)
+        b_srv = self.button(
+            g, self._tr("st_browse"),
+            lambda: self._browse_dir(e_srv, on_change=autosave_now),
+            primary=False, width=125, height=34,
+        )
+        b_srv.grid(row=8, column=2, padx=(8, 0))
 
-        def toggle_host():
-            st = "normal" if sw_host.get() else "disabled"
-            e_srv.configure(state=st)
-            b_srv.configure(state=st)
-
-        sw_host.configure(command=toggle_host)
-        if c["is_host"]:
-            sw_host.select()
-        toggle_host()
-
-        # === Секция 2: Память (RAM), Java и JVM-пресеты ===
-        section(7, "☕ Память (RAM), Java и JVM-аргументы")
+        # --- Секция 2: Память (RAM), Java и JVM-аргументы ---
+        section(9, self._tr("st_sec_java"))
 
         sys_ram = cfgmod.system_ram_mb()
         rec_ram = cfgmod.recommended_ram_mb(sys_ram)
         max_ram = cfgmod.max_selectable_ram_mb()
 
-        row_lbl(8, "Авто-RAM")
+        row_lbl(10, self._tr("st_autoram"))
         sw_autoram = ctk.CTkSwitch(
-            g,
-            text=f"Автоподбор по системе ({rec_ram} МБ из {sys_ram} МБ ОЗУ)",
+            g, text=self._tr("st_autoram_switch", rec=rec_ram, total=sys_ram),
         )
         self.T(sw_autoram, fg_color="surface_hover", progress_color="accent", button_color="text",
                button_hover_color="accent_hover", text_color="text")
-        sw_autoram.grid(row=8, column=1, columnspan=2, sticky="w", pady=4)
+        sw_autoram.grid(row=10, column=1, columnspan=2, sticky="w", pady=4)
 
-        row_lbl(9, "Память вручную")
+        row_lbl(11, self._tr("st_manual_ram"))
         ram_box = self.frame(g, "panel")
-        ram_box.grid(row=9, column=1, columnspan=2, sticky="ew", pady=4)
+        ram_box.grid(row=11, column=1, columnspan=2, sticky="ew", pady=4)
         e_ram = self.entry(ram_box, width=86, height=32)
         init_ram = min(max_ram, max(1024, int(c.get("ram_mb", rec_ram))))
         e_ram.insert(0, str(init_ram))
         e_ram.pack(side="right")
-        self.label(ram_box, "МБ", 12, color="subtext").pack(side="right", padx=(6, 6))
+        self.label(ram_box, self._tr("mb_unit"), 12, color="subtext").pack(side="right", padx=(6, 6))
 
         steps = max(1, (max_ram - 1024) // 256)
+
+        def on_ram_slider(v):
+            e_ram.delete(0, "end")
+            e_ram.insert(0, str(int(round(v))))
+            autosave_now()
+
         sl_ram = ctk.CTkSlider(
             ram_box, from_=1024, to=max_ram, number_of_steps=steps,
-            command=lambda v: (e_ram.delete(0, "end"), e_ram.insert(0, str(int(round(v))))),
+            command=on_ram_slider,
         )
         self.T(sl_ram, fg_color="surface", progress_color="accent", button_color="accent",
                button_hover_color="accent_hover")
         sl_ram.set(init_ram)
         sl_ram.pack(side="left", fill="x", expand=True, padx=(0, 10))
 
-        def toggle_autoram():
-            manual = not bool(sw_autoram.get())
-            sl_ram.configure(state="normal" if manual else "disabled")
-            e_ram.configure(state="normal" if manual else "disabled")
+        # #20 + #21: Выбор режима Java через чистый CTkOptionMenu (без артефактов SegmentedButton)
+        # и список найденных Java с dynamic_resizing=False + кнопка в фиксированной колонке 2!
+        row_lbl(12, self._tr("st_java_mode"))
+        lbl_java_auto = self._tr("java_mode_auto")
+        lbl_java_manual = self._tr("java_mode_manual")
+        om_java_mode = self.option_menu(g, values=[lbl_java_auto, lbl_java_manual], width=250)
+        om_java_mode.set(lbl_java_manual if c.get("java_mode") == "manual" else lbl_java_auto)
+        om_java_mode.grid(row=12, column=1, sticky="w", pady=4)
 
-        sw_autoram.configure(command=toggle_autoram)
-        if c.get("auto_ram", True):
-            sw_autoram.select()
-        toggle_autoram()
+        row_lbl(13, self._tr("st_java_detected"))
+        detected_map = {}  # display_label -> full_path
+        om_detected = self.option_menu(g, values=[self._tr("java_detect_placeholder")])
+        om_detected.grid(row=13, column=1, sticky="ew", pady=4)
+        btn_scan_java = self.button(g, self._tr("st_detect_java_btn"), primary=False, width=125, height=34)
+        btn_scan_java.grid(row=13, column=2, padx=(8, 0))
 
-        # Java: автодетект + ручной выбор (#7)
-        row_lbl(10, "Режим Java")
-        java_row = self.frame(g, "panel")
-        java_row.grid(row=10, column=1, columnspan=2, sticky="ew", pady=4)
-        java_mode_ui = "Вручную" if c.get("java_mode") == "manual" else "Авто (рекомендуется)"
-        seg_java = self.segmented(java_row, values=["Авто (рекомендуется)", "Вручную"])
-        seg_java.set(java_mode_ui)
-        seg_java.pack(side="left")
-
-        detected_map = {}  # label -> path
-        om_detected = self.option_menu(java_row, values=["Нажми «Найти Java»…"], width=230)
-        om_detected.pack(side="left", padx=(10, 6))
-        btn_scan_java = self.button(java_row, "🔄 Найти Java", primary=False, width=115, height=32)
-        btn_scan_java.pack(side="left")
-
-        row_lbl(11, "Путь к Java")
-        e_java = self.entry(g, height=34, placeholder_text="путь к bin/java (или оставь Авто)")
+        row_lbl(14, self._tr("st_java_path"))
+        e_java = self.entry(g, height=34, placeholder_text=self._tr("st_java_path_ph"))
         e_java.insert(0, c.get("java_path", ""))
-        e_java.grid(row=11, column=1, sticky="ew", pady=4)
-        java_info_lbl = self.label(g, "", 12, color="subtext")
-        java_info_lbl.grid(row=12, column=1, columnspan=2, sticky="w")
+        e_java.grid(row=14, column=1, sticky="ew", pady=4)
+        b_java = self.button(
+            g, self._tr("st_browse"),
+            command=lambda: self._browse_file(e_java, on_change=lambda: (check_java_entry(), autosave_now())),
+            primary=False, width=125, height=34,
+        )
+        b_java.grid(row=14, column=2, padx=(8, 0))
+
+        java_info_lbl = self.label(g, "", 12, color="subtext", wraplength=540)
+        java_info_lbl.grid(row=15, column=1, columnspan=2, sticky="w")
 
         def check_java_entry(*_a):
-            if seg_java.get() != "Вручную":
-                self.msg(
-                    java_info_lbl,
-                    "Авторежим сам выберет подходящую системную Java или докачает рантайм Mojang (с учётом требований сервера).",
-                    "subtext",
-                )
-                return
+            if om_java_mode.get() != lbl_java_manual:
+                self.msg(java_info_lbl, self._tr("java_auto_hint"), "subtext")
+                return True
             raw_p = e_java.get().strip()
             if not raw_p:
-                self.msg(java_info_lbl, "Укажи путь к java или выбери из найденных выше", "subtext")
-                return
+                self.msg(java_info_lbl, self._tr("java_manual_empty"), "subtext")
+                return False
             info = jvm.probe_java(raw_p)
             if info:
-                self.msg(java_info_lbl, f"✓ Найдена {info['label']}", "success")
-            else:
-                self.msg(java_info_lbl, "✗ Не удалось запустить java -version по этому пути", "danger")
-
-        b_java = self.button(
-            g, "Обзор…",
-            command=lambda: self._browse_file(e_java, on_change=check_java_entry),
-            primary=False, width=105, height=34,
-        )
-        b_java.grid(row=11, column=2, padx=(8, 0))
-        e_java.bind("<KeyRelease>", check_java_entry)
+                self.msg(java_info_lbl, self._tr("java_probe_ok", label=info["label"]), "success")
+                return True
+            self.msg(java_info_lbl, self._tr("java_probe_bad"), "danger")
+            return False
 
         def on_pick_detected(choice):
             path = detected_map.get(choice)
             if path:
-                seg_java.set("Вручную")
-                toggle_java_mode()
+                om_java_mode.set(lbl_java_manual)
+                toggle_java_mode(save_after=False)
                 e_java.delete(0, "end")
                 e_java.insert(0, path)
                 check_java_entry()
+                autosave_now()
 
         om_detected.configure(command=on_pick_detected)
 
-        def toggle_java_mode(*_a):
-            manual = seg_java.get() == "Вручную"
-            st = "normal" if manual else "disabled"
-            e_java.configure(state=st)
-            b_java.configure(state=st)
-            check_java_entry()
-
-        seg_java.configure(command=toggle_java_mode)
-        toggle_java_mode()
-
         def run_java_scan():
             btn_scan_java.configure(state="disabled")
-            self.msg(java_info_lbl, "Ищем установленные Java в системе… 🔍", "subtext")
+            self.msg(java_info_lbl, self._tr("java_scanning"), "subtext")
+            mc_dir_hint = e_mc.get().strip() or c.get("mc_dir", "")
 
             def work():
-                mc_d = mc.find_minecraft_dir(e_mc.get().strip() or c.get("mc_dir", ""))
+                mc_d = mc.find_minecraft_dir(mc_dir_hint)
                 self.post(done, jvm.detect_java_installations(mc_d))
 
             def done(found):
                 try:
+                    if not btn_scan_java.winfo_exists():
+                        return
                     btn_scan_java.configure(state="normal")
                     detected_map.clear()
                     if not found:
-                        om_detected.configure(values=["Java не найдена (скачается сама)"])
-                        om_detected.set("Java не найдена (скачается сама)")
-                        self.msg(java_info_lbl, "Системная Java не найдена — в Авто-режиме лаунчер сам скачает её от Mojang.", "subtext")
+                        none_txt = self._tr("java_none_found")
+                        om_detected.configure(values=[none_txt])
+                        om_detected.set(none_txt)
+                        self.msg(java_info_lbl, self._tr("java_none_hint"), "subtext")
                         return
                     labels = []
-                    for j in found:
-                        short_lbl = f"{j['label']} — {Path(j['path']).parent.parent.name}"
-                        detected_map[short_lbl] = j["path"]
-                        labels.append(short_lbl)
+                    for idx_j, j in enumerate(found, 1):
+                        folder_hint = Path(j["path"]).parent.parent.name
+                        if len(folder_hint) > 22:
+                            folder_hint = folder_hint[:20] + "…"
+                        disp = f"{j['label']}  [{folder_hint}]"
+                        if disp in detected_map:
+                            disp = f"{disp} #{idx_j}"
+                        detected_map[disp] = j["path"]
+                        labels.append(disp)
                     om_detected.configure(values=labels)
                     om_detected.set(labels[0])
-                    if seg_java.get() != "Вручную":
-                        self.msg(java_info_lbl, f"Найдено Java: {len(found)} шт. (лучшая: {found[0]['label']})", "success")
+                    if om_java_mode.get() != lbl_java_manual:
+                        self.msg(
+                            java_info_lbl,
+                            self._tr("java_found_summary", n=len(found), best=found[0]["label"]),
+                            "success",
+                        )
                 except Exception:
                     pass
 
@@ -1366,10 +1891,10 @@ class App(ctk.CTk):
 
         btn_scan_java.configure(command=run_java_scan)
 
-        # JVM-пресеты + доп. параметры (#8)
-        row_lbl(13, "JVM-пресет")
+        # JVM-пресеты
+        row_lbl(16, self._tr("st_jvm_preset"))
         preset_row = self.frame(g, "panel")
-        preset_row.grid(row=13, column=1, columnspan=2, sticky="ew", pady=4)
+        preset_row.grid(row=16, column=1, columnspan=2, sticky="ew", pady=4)
 
         def current_preset_names():
             m = dict(jvm.BUILTIN_PRESETS)
@@ -1380,47 +1905,57 @@ class App(ctk.CTk):
         if init_preset not in current_preset_names():
             init_preset = "G1GC"
         preset_var = tk.StringVar(value=init_preset)
-        om_preset = self.option_menu(preset_row, values=current_preset_names(), variable=preset_var, width=210)
+        om_preset = self.option_menu(
+            preset_row, values=current_preset_names(), variable=preset_var, width=220,
+            command=lambda _v: autosave_now(),
+        )
         om_preset.pack(side="left")
 
         def refresh_presets(selected_name):
             vals = current_preset_names()
             om_preset.configure(values=vals)
             preset_var.set(selected_name if selected_name in vals else "G1GC")
+            autosave_now()
 
         self.button(
-            preset_row, "✏ Редактировать / Свой пресет…",
+            preset_row, self._tr("st_edit_presets"),
             command=lambda: self._open_presets_editor(custom_presets_draft, preset_var, refresh_presets),
             primary=False, width=230, height=32,
         ).pack(side="left", padx=(10, 0))
 
-        row_lbl(14, "Доп. параметры JVM")
-        e_extra_jvm = self.entry(
-            g, height=34,
-            placeholder_text="Дописать к пресету, например: -Dfile.encoding=UTF-8",
-        )
+        row_lbl(17, self._tr("st_extra_jvm"))
+        e_extra_jvm = self.entry(g, height=34, placeholder_text=self._tr("st_extra_jvm_ph"))
         e_extra_jvm.insert(0, c.get("extra_jvm_args", ""))
-        e_extra_jvm.grid(row=14, column=1, columnspan=2, sticky="ew", pady=4)
+        e_extra_jvm.grid(row=17, column=1, columnspan=2, sticky="ew", pady=4)
 
-        # === Секция 3: Игра, разрешение окна и таймаут ===
-        section(15, "🖥 Окно игры, папки и таймаут запуска")
+        # --- Секция 3: Окно игры, папки и таймаут ---
+        section(18, self._tr("st_sec_window"))
 
-        row_lbl(16, "Папка .minecraft")
+        row_lbl(19, self._tr("st_mc_dir"))
         e_mc = self.entry(g, height=34)
         e_mc.insert(0, str(mc.find_minecraft_dir(c.get("mc_dir", ""))))
-        e_mc.grid(row=16, column=1, sticky="ew", pady=4)
-        self.button(g, "Обзор…", lambda: self._browse_dir(e_mc), primary=False,
-                    width=105, height=34).grid(row=16, column=2, padx=(8, 0))
+        e_mc.grid(row=19, column=1, sticky="ew", pady=4)
+        self.button(
+            g, self._tr("st_browse"),
+            lambda: self._browse_dir(e_mc, on_change=autosave_now),
+            primary=False, width=125, height=34,
+        ).grid(row=19, column=2, padx=(8, 0))
 
-        row_lbl(17, "Режим окна игры")
-        win_mode_label = WINDOW_MODES_REV.get(c.get("window_mode", "default"), "Обычное")
-        seg_win = self.segmented(g, values=list(WINDOW_MODES_UI.keys()))
-        seg_win.set(win_mode_label)
-        seg_win.grid(row=17, column=1, columnspan=2, sticky="w", pady=4)
+        # #21: Режим окна игры через CTkOptionMenu вместо CTkSegmentedButton
+        row_lbl(20, self._tr("st_win_mode"))
+        wm_labels = {
+            "default": self._tr("win_default"),
+            "fullscreen": self._tr("win_fullscreen"),
+            "custom": self._tr("win_custom"),
+        }
+        wm_rev = {v: k for k, v in wm_labels.items()}
+        om_win = self.option_menu(g, values=list(wm_labels.values()), width=230)
+        om_win.set(wm_labels.get(c.get("window_mode", "default"), wm_labels["default"]))
+        om_win.grid(row=20, column=1, sticky="w", pady=4)
 
-        row_lbl(18, "Размер окна (Ш × В)")
+        row_lbl(21, self._tr("st_win_size"))
         res_row = self.frame(g, "panel")
-        res_row.grid(row=18, column=1, columnspan=2, sticky="w", pady=4)
+        res_row.grid(row=21, column=1, columnspan=2, sticky="w", pady=4)
         e_w = self.entry(res_row, width=78, height=32)
         e_w.insert(0, str(c.get("window_width", 1280)))
         e_w.pack(side="left")
@@ -1429,113 +1964,219 @@ class App(ctk.CTk):
         e_h.insert(0, str(c.get("window_height", 720)))
         e_h.pack(side="left", padx=(0, 10))
 
-        res_preset_btns = []
         for rw, rh in ((1280, 720), (1600, 900), (1920, 1080), (2560, 1440)):
             def _set_wh(w=rw, h=rh):
-                if seg_win.get() != "Свой размер":
-                    seg_win.set("Свой размер")
-                    toggle_win_mode()
+                if om_win.get() != wm_labels["custom"]:
+                    om_win.set(wm_labels["custom"])
+                    toggle_win_mode(save_after=False)
                 e_w.delete(0, "end")
                 e_w.insert(0, str(w))
                 e_h.delete(0, "end")
                 e_h.insert(0, str(h))
+                autosave_now()
 
-            b = self.button(res_row, f"{rw}×{rh}", _set_wh, primary=False, width=76, height=28,
-                            font=ctk.CTkFont(size=11))
-            b.pack(side="left", padx=2)
-            res_preset_btns.append(b)
+            self.button(
+                res_row, f"{rw}×{rh}", _set_wh,
+                primary=False, width=76, height=28,
+                font=ctk.CTkFont(size=11),
+            ).pack(side="left", padx=2)
 
-        def toggle_win_mode(*_a):
-            custom = seg_win.get() == "Свой размер"
-            st = "normal" if custom else "disabled"
-            e_w.configure(state=st)
-            e_h.configure(state=st)
-
-        seg_win.configure(command=toggle_win_mode)
-        toggle_win_mode()
-
-        row_lbl(19, "Таймаут запуска")
+        row_lbl(22, self._tr("st_timeout"))
         to_row = self.frame(g, "panel")
-        to_row.grid(row=19, column=1, columnspan=2, sticky="w", pady=4)
+        to_row.grid(row=22, column=1, columnspan=2, sticky="w", pady=4)
         e_timeout = self.entry(to_row, width=86, height=32)
         e_timeout.insert(0, str(c.get("launch_timeout", 120)))
         e_timeout.pack(side="left")
-        self.label(to_row, "сек  (0 — отключить контроль зависания старта)", 12, color="subtext").pack(
+        self.label(to_row, self._tr("st_timeout_hint"), 12, color="subtext").pack(
             side="left", padx=10)
 
-        # Запускаем автодетект Java фоном сразу при открытии настроек
-        run_java_scan()
+        # --- Секция 4: Выход из аккаунта и удаление серверов (#13) ---
+        section(23, self._tr("st_sec_account"))
+        acc_box = self.frame(g, "panel")
+        acc_box.grid(row=24, column=0, columnspan=3, sticky="ew", pady=(2, 8))
+        self.label(acc_box, self._tr("st_signout_desc"), 12, color="subtext", wraplength=620).pack(
+            anchor="w", pady=(0, 8))
+        self.danger_button(
+            acc_box, self._tr("st_signout_btn"),
+            command=self._confirm_signout_dialog,
+            width=340, height=38,
+        ).pack(anchor="w")
 
-        err = self.label(card, "", 13, color="danger")
-        err.pack(anchor="w", padx=26, pady=(4, 0))
+        err = self.label(g, "", 13, color="danger", wraplength=680)
+        err.grid(row=25, column=0, columnspan=3, sticky="w", pady=(6, 4))
 
-        def cancel():
-            self.apply_theme(self.cfg["theme"])
-            self.show("main")
+        # --- Логика переключателей и автосохранения (#8) ---
+        ready_for_autosave = [False]
 
-        def save():
-            nick = e_nick.get().strip()
-            parsed = parse_hostport(e_host.get())
-            if not NICK_RE.match(nick):
-                return self.msg(err, "Ник: 3–16 символов, только a-z, A-Z, 0-9 и _", "danger")
-            if not parsed:
-                return self.msg(err, "Адрес сервера не похож на IP (пример: 26.12.34.56)", "danger")
-            srv_dir = e_srv.get().strip() if sw_host.get() else c["server_mods_dir"]
-            if sw_host.get() and not Path(srv_dir).is_dir():
-                return self.msg(err, "Для режима хоста укажи существующую папку модов сервера", "danger")
+        def toggle_host(save_after=True):
+            st = "normal" if sw_host.get() else "disabled"
+            e_srv.configure(state=st)
+            b_srv.configure(state=st)
+            if save_after:
+                autosave_now()
 
+        def toggle_autoram(save_after=True):
+            manual = not bool(sw_autoram.get())
+            sl_ram.configure(state="normal" if manual else "disabled")
+            e_ram.configure(state="normal" if manual else "disabled")
+            if save_after:
+                autosave_now()
+
+        def toggle_java_mode(_v=None, save_after=True):
+            manual = om_java_mode.get() == lbl_java_manual
+            st = "normal" if manual else "disabled"
+            e_java.configure(state=st)
+            b_java.configure(state=st)
+            check_java_entry()
+            if save_after:
+                autosave_now()
+
+        def toggle_win_mode(_v=None, save_after=True):
+            custom = om_win.get() == wm_labels["custom"]
+            st = "normal" if custom else "disabled"
+            e_w.configure(state=st)
+            e_h.configure(state=st)
+            if save_after:
+                autosave_now()
+
+        def on_theme_change(theme_name):
+            self.apply_theme(theme_name)
+            autosave_now()
+
+        def on_lang_change(chosen_lang_lbl):
+            new_lang = lang_rev.get(chosen_lang_lbl, "ru")
+            if new_lang != self._lang():
+                autosave_now()
+                c["language"] = new_lang
+                cfgmod.save(c)
+                self.show("settings")
+
+        def autosave_now(*_a):
+            if not ready_for_autosave[0]:
+                return
+            first_error = None
+
+            # 1. Ник (#14: строгая валидация без пробелов и спецсимволов)
+            raw_nick = e_nick.get()
+            ok_nick, nick_err = i18n.validate_nickname(raw_nick, lang=self._lang())
+            if ok_nick:
+                c["nickname"] = raw_nick
+            else:
+                first_error = first_error or nick_err
+
+            # 2. Тема
+            c["theme"] = om_theme.get()
+
+            # 3. Сервер / список серверов (#12)
+            raw_addr = e_host.get().strip()
+            if raw_addr:
+                parsed = parse_hostport(raw_addr)
+                if parsed:
+                    if not c.get("servers"):
+                        cfgmod.add_or_select_server(c, parsed[0], parsed[1])
+                        rebuild_servers_dropdown()
+                    else:
+                        cur_srv = cfgmod.active_server(c)
+                        if cur_srv and (cur_srv["host"], cur_srv["port"]) != parsed:
+                            cur_srv["host"], cur_srv["port"] = parsed
+                            cur_srv["id"] = cfgmod._server_id(parsed[0], parsed[1])
+                            c["active_server_id"] = cur_srv["id"]
+                            c["sync_host"], c["sync_port"] = parsed
+                            rebuild_servers_dropdown()
+                else:
+                    first_error = first_error or self._tr("st_err_addr")
+
+            # 4. Хост-режим
+            host_on = bool(sw_host.get())
+            srv_dir = e_srv.get().strip()
+            if host_on:
+                if srv_dir and Path(srv_dir).is_dir():
+                    c["is_host"] = True
+                    c["server_mods_dir"] = srv_dir
+                else:
+                    first_error = first_error or self._tr("st_err_host_dir")
+            else:
+                c["is_host"] = False
+                if srv_dir:
+                    c["server_mods_dir"] = srv_dir
+
+            # 5. RAM
             auto_ram_val = bool(sw_autoram.get())
+            c["auto_ram"] = auto_ram_val
+            if not auto_ram_val:
+                try:
+                    c["ram_mb"] = max(1024, int(e_ram.get().strip()))
+                except ValueError:
+                    first_error = first_error or self._tr("st_err_ram")
+
+            # 6. Java
+            java_mode_val = "manual" if om_java_mode.get() == lbl_java_manual else "auto"
+            if java_mode_val == "auto":
+                c["java_mode"] = "auto"
+            else:
+                jp = e_java.get().strip()
+                if jp and jvm.probe_java(jp):
+                    c["java_mode"] = "manual"
+                    c["java_path"] = jp
+                else:
+                    first_error = first_error or self._tr("st_err_java")
+
+            # 7. JVM-пресеты и флаги
+            c["jvm_preset"] = preset_var.get()
+            c["custom_jvm_presets"] = dict(custom_presets_draft)
+            c["extra_jvm_args"] = e_extra_jvm.get().strip()
+
+            # 8. Папка .minecraft, режим окна и таймаут
+            if e_mc.get().strip():
+                c["mc_dir"] = e_mc.get().strip()
+
+            win_mode_val = wm_rev.get(om_win.get(), "default")
+            c["window_mode"] = win_mode_val
+            if win_mode_val == "custom":
+                try:
+                    c["window_width"] = max(320, int(e_w.get().strip()))
+                    c["window_height"] = max(240, int(e_h.get().strip()))
+                except ValueError:
+                    first_error = first_error or self._tr("st_err_res")
+
             try:
-                ram_val = max(1024, int(e_ram.get().strip())) if not auto_ram_val else int(c.get("ram_mb", rec_ram))
+                c["launch_timeout"] = max(0, int(e_timeout.get().strip()))
             except ValueError:
-                return self.msg(err, "Память (RAM) должна быть числом в мегабайтах (например 4096)", "danger")
+                first_error = first_error or self._tr("st_err_timeout")
 
-            java_mode_val = "manual" if seg_java.get() == "Вручную" else "auto"
-            java_path_val = e_java.get().strip() if java_mode_val == "manual" else c.get("java_path", "")
-            if java_mode_val == "manual" and not jvm.probe_java(java_path_val):
-                return self.msg(err, "Укажи рабочий путь к Java или переключись на «Авто»", "danger")
-
-            win_mode_val = WINDOW_MODES_UI.get(seg_win.get(), "default")
-            try:
-                win_w = max(320, int(e_w.get().strip())) if win_mode_val == "custom" else int(c.get("window_width", 1280))
-                win_h = max(240, int(e_h.get().strip())) if win_mode_val == "custom" else int(c.get("window_height", 720))
-            except ValueError:
-                return self.msg(err, "Ширина и высота окна должны быть числами (например 1920 и 1080)", "danger")
-
-            try:
-                timeout_val = max(0, int(e_timeout.get().strip()))
-            except ValueError:
-                return self.msg(err, "Таймаут запуска должен быть числом секунд (0 или больше)", "danger")
-
-            c.update(
-                nickname=nick,
-                theme=om_theme.get(),
-                sync_host=parsed[0],
-                sync_port=parsed[1],
-                is_host=bool(sw_host.get()),
-                server_mods_dir=srv_dir,
-                auto_ram=auto_ram_val,
-                ram_mb=ram_val,
-                java_mode=java_mode_val,
-                java_path=java_path_val,
-                jvm_preset=preset_var.get(),
-                custom_jvm_presets=custom_presets_draft,
-                extra_jvm_args=e_extra_jvm.get().strip(),
-                mc_dir=e_mc.get().strip(),
-                window_mode=win_mode_val,
-                window_width=win_w,
-                window_height=win_h,
-                launch_timeout=timeout_val,
-            )
             cfgmod.save(c)
-            self.show("main")
+            if first_error:
+                self.msg(err, first_error, "danger")
+                self.msg(autosave_lbl, self._tr("st_autosave_hint"), "subtext")
+            else:
+                self.msg(err, "", "subtext")
+                self.msg(autosave_lbl, self._tr("st_saved_ok"), "success")
 
-        self._save_settings_fn = save
-        self._cancel_settings_fn = cancel
+        # Инициализируем состояния переключателей и вешаем слушатели автосохранения
+        if c["is_host"]:
+            sw_host.select()
+        toggle_host(save_after=False)
+        sw_host.configure(command=toggle_host)
 
-        bar = self.frame(card, "panel")
-        bar.pack(side="bottom", fill="x", padx=24, pady=(6, 16))
-        self.button(bar, "Сохранить 💾", save, width=165, height=40).pack(side="right")
-        self.button(bar, "Отмена", cancel, primary=False, width=110, height=40).pack(
-            side="right", padx=10)
+        if c.get("auto_ram", True):
+            sw_autoram.select()
+        toggle_autoram(save_after=False)
+        sw_autoram.configure(command=toggle_autoram)
+
+        toggle_java_mode(save_after=False)
+        om_java_mode.configure(command=toggle_java_mode)
+
+        toggle_win_mode(save_after=False)
+        om_win.configure(command=toggle_win_mode)
+
+        om_theme.configure(command=on_theme_change)
+        om_lang.configure(command=on_lang_change)
+
+        for ent in (e_nick, e_host, e_srv, e_ram, e_java, e_extra_jvm, e_mc, e_w, e_h, e_timeout):
+            ent.bind("<KeyRelease>", autosave_now, add="+")
+            ent.bind("<FocusOut>", autosave_now, add="+")
+        e_java.bind("<KeyRelease>", check_java_entry, add="+")
+
+        ready_for_autosave[0] = True
+        run_java_scan()
         return root

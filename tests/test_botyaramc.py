@@ -53,6 +53,7 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(M, "RESOURCEPACKS_DIR", rp_dir)
 
     C.ensure_files()
+    srv_http.rate_limiter.reset()
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv_http.Handler)
     port = httpd.server_address[1]
@@ -491,17 +492,48 @@ def test_ui_views_and_dialogs_smoke(isolated_env):
             app.apply_theme(tname)
             app.update()
 
-        # Wizard (все 3 шага)
-        for step in (1, 2, 3):
-            app.show("wizard", step)
-            app.update()
+        # Wizard (все 4 шага: язык -> ник -> тема -> сервер) на RU и EN
+        for lang_code in ("ru", "en"):
+            app.cfg["language"] = lang_code
+            for step in (1, 2, 3, 4):
+                app.show("wizard", step)
+                app.update()
 
-        # Настройки
+        # Настройки: проверяем отсутствие SegmentedButton и работу автосохранения
         app.show("settings")
         app.update()
 
-        # Главное окно
+        def _collect_classes(w):
+            res = [type(w).__name__]
+            for ch in w.winfo_children():
+                res.extend(_collect_classes(ch))
+            return res
+
+        assert "CTkSegmentedButton" not in _collect_classes(app.view)
+
+        # Диалог добавления сервера и подтверждения выхода из аккаунта
+        app._open_add_server_dialog(lambda: None)
+        app.update()
+        app._on_hotkey_escape()
+
+        app._confirm_signout_dialog()
+        app.update()
+        app._on_hotkey_escape()
+
+        # Главное окно: прогрессбар скрыт по умолчанию, плавный hover кнопки ИГРАТЬ и автосмена приветствий
         app.show("main")
+        app.update()
+        assert app.progress.winfo_manager() == ""
+        assert ui.GREETING_ROTATE_MS == 10 * 60 * 1000
+        old_g = app._greeting
+        app._rotate_greeting()
+        app.update()
+        assert app._greeting != old_g
+        assert app.greeting_lbl.cget("text") == app._greeting
+        assert app._greeting_job is not None
+        app._animate_play_hover(1.0)
+        app.update()
+        app._animate_play_hover(0.0)
         app.update()
 
         # Диалог папок, хоткеев, краш-репорта и полного лога
@@ -513,16 +545,263 @@ def test_ui_views_and_dialogs_smoke(isolated_env):
         app.update()
         app._on_hotkey_escape()
 
-        import tkinter as tk
         pvar = tk.StringVar(value="G1GC")
         app._open_presets_editor({}, pvar, lambda _n: None)
         app.update()
         app._on_hotkey_escape()
 
-        rep = crash.parse_crash("java.lang.OutOfMemoryError: Java heap space", exit_code=1)
+        rep = crash.parse_crash("java.lang.OutOfMemoryError: Java heap space", exit_code=1, lang="en")
+        assert "OutOfMemoryError" in rep["title"]
         app._open_crash_dialog(rep, "Full crash log text", {"mc_version": "1.20.1", "loader": "fabric"})
         app.update()
         app._open_log_window("Full crash log text", mc_version="1.20.1", loader="fabric", exit_code=1)
         app.update()
     finally:
         app.destroy()
+
+
+# ------------------------------------------------------------------
+# Новые тесты: old-mods, кэш mods/botyaraMC, delete_user_mods, rate-limit,
+#              TUI/config RU+EN, client_folder, auto_join, валидация ника и ассеты
+# ------------------------------------------------------------------
+def test_old_mods_stash_multi_server_and_delete_user_mods(isolated_env):
+    port = isolated_env["port"]
+    mods_dir = isolated_env["mods_dir"]
+    cfg_file = isolated_env["cfg_file"]
+    mc_dir = isolated_env["mc_dir"]
+
+    client_mods = mc_dir / "mods"
+    client_mods.mkdir(parents=True)
+    # До первого запуска botyaraMC в папке mods уже лежат старые чужие моды и подпапки
+    (client_mods / "legacy_optifine.jar").write_bytes(b"LEGACY_MOD_1")
+    (client_mods / "legacy_map.jar.disabled").write_bytes(b"LEGACY_DISABLED")
+    (client_mods / "legacy_sub").mkdir()
+    (client_mods / "legacy_sub" / "cfg.txt").write_text("hi", encoding="utf-8")
+
+    mod_a = b"SERVER1_MOD_A_CONTENT"
+    mod_b = b"SHARED_MOD_B_CONTENT"
+    mod_c = b"SERVER2_MOD_C_CONTENT"
+    (mods_dir / "mod_a.jar").write_bytes(mod_a)
+    (mods_dir / "mod_b.jar").write_bytes(mod_b)
+
+    mf1 = sync.fetch_manifest("127.0.0.1", port)
+    assert sync.sync_all("127.0.0.1", port, mf1, mc_dir) is True
+
+    # 1. Всё изначальное содержимое mods/ переехало в mods/old-mods/
+    assert not (client_mods / "legacy_optifine.jar").exists()
+    assert not (client_mods / "legacy_map.jar.disabled").exists()
+    assert not (client_mods / "legacy_sub").exists()
+    assert (client_mods / "old-mods" / "legacy_optifine.jar").read_bytes() == b"LEGACY_MOD_1"
+    assert (client_mods / "old-mods" / "legacy_map.jar.disabled").read_bytes() == b"LEGACY_DISABLED"
+    assert (client_mods / "old-mods" / "legacy_sub" / "cfg.txt").read_text("utf-8") == "hi"
+    assert (client_mods / "mod_a.jar").read_bytes() == mod_a
+    assert (client_mods / "mod_b.jar").read_bytes() == mod_b
+
+    # 2. Переключаемся на "Сервер 2" (где вместо mod_a нужен mod_c) -> mod_a уходит в запас mods/botyaraMC/
+    (mods_dir / "mod_a.jar").unlink()
+    (mods_dir / "mod_c.jar").write_bytes(mod_c)
+    mf2 = sync.fetch_manifest("127.0.0.1", port)
+    assert sync.sync_all("127.0.0.1", port, mf2, mc_dir) is True
+
+    assert not (client_mods / "mod_a.jar").exists()
+    assert (client_mods / "botyaraMC" / "mod_a.jar").read_bytes() == mod_a
+    assert (client_mods / "mod_c.jar").read_bytes() == mod_c
+
+    # 3. Возвращаемся на "Сервер 1" -> mod_a достаётся из mods/botyaraMC/ без скачивания (0 байт по сети)!
+    plan_back = sync.plan_sync(mf1, mc_dir)
+    assert plan_back["total_bytes"] == 0
+    assert sync.sync_all("127.0.0.1", port, mf2_to_1 := mf1, mc_dir) is True
+    assert (client_mods / "mod_a.jar").read_bytes() == mod_a
+    assert (client_mods / "botyaraMC" / "mod_c.jar").read_bytes() == mod_c
+
+    # 4. Проверяем настройку delete_user_mods: false сохраняет моды игрока, true — удаляет
+    (client_mods / "user_minimap.jar").write_bytes(b"USER_MINIMAP")
+    cfg_file.write_text("delete_user_mods = false\n", encoding="utf-8")
+    mf_keep = sync.fetch_manifest("127.0.0.1", port)
+    assert mf_keep["delete_user_mods"] is False
+    sync.sync_all("127.0.0.1", port, mf_keep, mc_dir)
+    assert (client_mods / "user_minimap.jar").is_file()
+
+    cfg_file.write_text("delete_user_mods = true\n", encoding="utf-8")
+    mf_del = sync.fetch_manifest("127.0.0.1", port)
+    assert mf_del["delete_user_mods"] is True
+    sync.sync_all("127.0.0.1", port, mf_del, mc_dir)
+    assert not (client_mods / "user_minimap.jar").exists()
+
+
+def test_rate_limiting_server_config_tui_auto_join_and_client_folder(isolated_env):
+    import tui
+
+    port = isolated_env["port"]
+    cfg_file = isolated_env["cfg_file"]
+    mc_dir = isolated_env["mc_dir"]
+
+    # Проверяем двуязычное сохранение конфига сервера и TUI-валидаторы
+    srv_cfg = C.load()
+    srv_cfg.update({
+        "language": "en",
+        "server_name": "Cosy Friends SMP",
+        "client_folder": "cosy_smp",
+        "auto_join": False,
+        "rate_limit_per_min": 5,
+    })
+    C.save(srv_cfg, lang="en")
+    raw_txt = cfg_file.read_text("utf-8")
+    assert "botyaraMC sync-server configuration" in raw_txt
+    assert tui._validate_port("25456", "en") is True
+    assert isinstance(tui._validate_port("99999", "en"), str)
+
+    # Проверяем /manifest: поля server_name, client_folder, auto_join и rate limit (429)
+    srv_http.rate_limiter.reset()
+    mf = sync.fetch_manifest("127.0.0.1", port)
+    assert mf["server_name"] == "Cosy Friends SMP"
+    assert mf["client_folder"] == "cosy_smp"
+    assert mf["server"]["auto_join"] is False
+
+    # Исчерпываем лимит 5 запросов/мин с одного IP -> получаем 429 Too Many Requests
+    got_429 = False
+    for _ in range(8):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/ping", timeout=3).read()
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                got_429 = True
+                assert e.headers.get("Retry-After") is not None
+                break
+    assert got_429 is True
+
+    # Возвращаем нормальный лимит
+    srv_cfg["rate_limit_per_min"] = 300
+    C.save(srv_cfg, lang="ru")
+    srv_http.rate_limiter.reset()
+
+    # Проверяем изолированную папку клиента (.minecraft/instances/cosy_smp) и auto_join
+    resolved = cfgmod.resolve_game_dir(mc_dir, "cosy_smp")
+    assert resolved == mc_dir / "instances" / "cosy_smp"
+
+    ver_dir = mc_dir / "versions" / "1.20.1"
+    ver_dir.mkdir(parents=True, exist_ok=True)
+    fake_client = {
+        "id": "1.20.1",
+        "type": "release",
+        "mainClass": "net.minecraft.client.main.Main",
+        "libraries": [],
+        "arguments": {
+            "game": [
+                "--username", "${auth_player_name}",
+                "--gameDir", "${game_directory}",
+                {
+                    "rules": [{"action": "allow", "features": {"is_quick_play_multiplayer": True}}],
+                    "value": ["--quickPlayMultiplayer", "${quickPlayMultiplayer}"],
+                },
+            ],
+            "jvm": ["-cp", "${classpath}"],
+        },
+    }
+    (ver_dir / "1.20.1.json").write_text(json.dumps(fake_client), encoding="utf-8")
+
+    javas = jvm.detect_java_installations(mc_dir)
+    lcfg = cfgmod.load()
+    lcfg["java_mode"] = "manual"
+    lcfg["java_path"] = javas[0]["path"]
+    lcfg["sync_host"] = "26.55.66.77"
+
+    # auto_join=False -> НЕТ --quickPlayMultiplayer
+    cmd_no_join = mc.build_command(
+        mc_dir, "1.20.1", "Steve",
+        server="127.0.0.1", port=25565, cfg=lcfg,
+        auto_join=False, client_folder="cosy_smp",
+    )
+    assert "--quickPlayMultiplayer" not in cmd_no_join
+    assert str(resolved) in cmd_no_join
+
+    # auto_join=True и server=127.0.0.1 при внешнем sync_host -> подставляется 26.55.66.77:25565!
+    cmd_join = mc.build_command(
+        mc_dir, "1.20.1", "Steve",
+        server="127.0.0.1", port=25565, cfg=lcfg,
+        auto_join=True, client_folder="cosy_smp",
+    )
+    assert "--quickPlayMultiplayer" in cmd_join
+    assert "26.55.66.77:25565" in cmd_join
+
+
+def test_nickname_validation_greetings_multi_server_signout_and_assets(isolated_env):
+    import cli
+    import i18n
+
+    # Проверяем строгую валидацию IP/хоста (неполный IPv4 при посимвольном вводе не считается валидным)
+    assert cli.parse_hostport("2") is None
+    assert cli.parse_hostport("26.12.") is None
+    assert cli.parse_hostport("26.12.34.999") is None
+    assert cli.parse_hostport("26.12.34.56") == ("26.12.34.56", 25456)
+    assert cli.parse_hostport("play.example.com:25500") == ("play.example.com", 25500)
+
+    # 14. Строгая валидация ника (3-16 символов, только a-zA-Z0-9_, без пробелов и дефисов)
+    assert i18n.validate_nickname("Steve_2026", "ru")[0] is True
+    assert i18n.validate_nickname("abc", "en")[0] is True
+    for bad in ("", "ab", "a" * 17, "Steve 1", " Steve", "Steve-1", "Steve.1", "Стив", "nick!"):
+        ok_ru, msg_ru = i18n.validate_nickname(bad, "ru")
+        ok_en, msg_en = i18n.validate_nickname(bad, "en")
+        assert ok_ru is False and msg_ru
+        assert ok_en is False and msg_en
+
+    # 7. Приветствия зависят от времени суток (утро/день/вечер/ночь), без майнкрафт-тематики
+    assert i18n.get_time_period(8) == "morning"
+    assert i18n.get_time_period(14) == "afternoon"
+    assert i18n.get_time_period(19) == "evening"
+    assert i18n.get_time_period(2) == "night"
+
+    mc_words = ("крипер", "алмаз", "кирк", "незер", "эндер", "creeper", "diamond", "pickaxe", "nether", "enderm")
+    for lg in ("ru", "en"):
+        for period, templates in i18n.GREETINGS_BY_TIME[lg].items():
+            assert len(templates) >= 25
+            for tpl in templates:
+                low_tpl = tpl.lower()
+                assert not any(w in low_tpl for w in mc_words), f"Minecraft reference in {period}: {tpl}"
+
+    seen_morning = {i18n.random_greeting("Dimas", "ru", hour=9) for _ in range(30)}
+    seen_night = {i18n.random_greeting("Dimas", "en", hour=2) for _ in range(30)}
+    assert len(seen_morning) >= 8
+    assert len(seen_night) >= 8
+    # При пустом имени {name} аккуратно убирается без лишних запятых
+    no_name = i18n.format_greeting_template("Доброе утро, {name}!", "")
+    assert no_name == "Доброе утро!"
+
+    # 12 & 13. Мульти-серверы и выход из аккаунта со сбросом серверов
+    cfg = cfgmod.load()
+    cfg["nickname"] = "Dimas"
+    cfg["setup_done"] = True
+    s1 = cfgmod.add_or_select_server(cfg, "26.1.1.1", 25456, name="Vanilla+")
+    s2 = cfgmod.add_or_select_server(cfg, "26.2.2.2", 25456, name="Create Tech")
+    assert len(cfg["servers"]) == 2
+    assert cfg["active_server_id"] == s2["id"]
+    assert cfg["sync_host"] == "26.2.2.2"
+
+    cfgmod.add_or_select_server(cfg, "26.1.1.1", 25456)
+    assert cfg["active_server_id"] == s1["id"]
+    assert cfg["sync_host"] == "26.1.1.1"
+
+    cfgmod.remove_server(cfg, s1["id"])
+    assert len(cfg["servers"]) == 1
+    assert cfg["sync_host"] == "26.2.2.2"
+
+    cfgmod.reset_account_and_servers(cfg)
+    assert cfg["setup_done"] is False
+    assert cfg["nickname"] == ""
+    assert cfg["servers"] == []
+    assert cfg["sync_host"] == ""
+
+    # 10 & 18. Проверяем русский баннер (без "Range-докачка") и иконку 1080x1080
+    ru_svg = ROOT / "assets" / "banner.ru.svg"
+    ru_png = ROOT / "assets" / "banner.ru.png"
+    ico_1080 = ROOT / "assets" / "icon_1080p.png"
+    svg_text = ru_svg.read_text("utf-8")
+    assert ru_svg.is_file() and "Минималистичный лаунчер" in svg_text
+    assert "Умная докачка" in svg_text and "Range-докачка" not in svg_text
+    assert ru_png.is_file() and ru_png.stat().st_size > 10_000
+    assert ico_1080.is_file()
+    ihdr = ico_1080.read_bytes()[16:24]
+    w = int.from_bytes(ihdr[0:4], "big")
+    h = int.from_bytes(ihdr[4:8], "big")
+    assert (w, h) == (1080, 1080)
+

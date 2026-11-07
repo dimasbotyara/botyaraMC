@@ -164,10 +164,13 @@ def _supports_quick_play_multiplayer(mc_dir, version_id):
 
 
 def build_command(mc_dir, version_id, nickname, server=None, port=None, cfg=None,
-                  server_java_version=None):
-    """Собирает полную команду запуска Minecraft с учётом Java, JVM-пресета, RAM и режима окна."""
+                  server_java_version=None, auto_join=True, client_folder=""):
+    """Собирает полную команду запуска Minecraft с учётом Java, JVM-пресета, RAM, папки и автовхода."""
     mc_dir = Path(mc_dir)
     cfg = cfg or cfgmod.load()
+    game_dir = cfgmod.resolve_game_dir(mc_dir, client_folder)
+    game_dir.mkdir(parents=True, exist_ok=True)
+
     ram = cfgmod.effective_ram_mb(cfg)
     java_exec, java_major = jvm.resolve_java(
         cfg, mc_dir, version_id=version_id, server_java_version=server_java_version,
@@ -181,7 +184,7 @@ def build_command(mc_dir, version_id, nickname, server=None, port=None, cfg=None
         "executablePath": java_exec,
         "launcherName": "botyaraMC",
         "launcherVersion": "2.0",
-        "gameDirectory": str(mc_dir),
+        "gameDirectory": str(game_dir),
         "jvmArguments": jvm_args,
     }
 
@@ -196,8 +199,11 @@ def build_command(mc_dir, version_id, nickname, server=None, port=None, cfg=None
         options["resolutionWidth"] = str(w)
         options["resolutionHeight"] = str(h)
 
-    if server:
-        srv_host = str(server).strip()
+    if auto_join:
+        srv_host = str(server or "").strip()
+        sync_h = str(cfg.get("sync_host") or "").strip()
+        if srv_host.lower() in ("", "auto", "127.0.0.1", "localhost", "0.0.0.0") and sync_h:
+            srv_host = sync_h
         srv_port = str(port or 25565).strip()
         if srv_host:
             if _supports_quick_play_multiplayer(mc_dir, version_id):
@@ -213,13 +219,14 @@ def build_command(mc_dir, version_id, nickname, server=None, port=None, cfg=None
 
 
 def launch(mc_dir, version_id, nickname, server, port, ram_mb, log_path,
-           cfg=None, server_java_version=None):
+           cfg=None, server_java_version=None, auto_join=True, client_folder=""):
     """Запускает процесс Minecraft, ротируя прошлый game.log -> game.prev.log."""
     mc_dir = Path(mc_dir)
+    game_dir = cfgmod.resolve_game_dir(mc_dir, client_folder)
+    game_dir.mkdir(parents=True, exist_ok=True)
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Сохраняем предыдущий лог отдельно, чтобы текущий game.log содержал только эту сессию
     if log_path.is_file() and log_path.stat().st_size > 0:
         try:
             shutil.copyfile(log_path, log_path.with_name("game.prev.log"))
@@ -235,6 +242,8 @@ def launch(mc_dir, version_id, nickname, server, port, ram_mb, log_path,
         mc_dir, version_id, nickname,
         server=server, port=port, cfg=eff_cfg,
         server_java_version=server_java_version,
+        auto_join=auto_join,
+        client_folder=client_folder,
     )
     log.info("Команда запуска (%s): %s ...", version_id, cmd[:6])
 
@@ -242,7 +251,7 @@ def launch(mc_dir, version_id, nickname, server, port, ram_mb, log_path,
     with open(log_path, "wb") as logf:
         proc = subprocess.Popen(
             cmd,
-            cwd=str(mc_dir),
+            cwd=str(game_dir),
             stdout=logf,
             stderr=subprocess.STDOUT,
             creationflags=flags,
