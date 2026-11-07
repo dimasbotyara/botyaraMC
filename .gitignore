@@ -1,0 +1,46 @@
+# ─── Python ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ─── Виртуальные окружения ────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ─── Кэши инструментов ────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ─── IDE / редакторы ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~
+
+# ─── ОС ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Логи (по README пишутся в config-папку, но на всякий) ────────────
+*.log
+launcher.log
+game.log
+
+# ─── Сервер: генерируется сам при первом запуске ──────────────────────
+server/config.txt
+server/mods/*.jar
+server/mods/*.zip
+# пустую папку mods/ храним в репе
+!server/mods/.gitkeep
+
+# ─── Лаунчер: локальное состояние / кэш загрузок ──────────────────────
+launcher/cache/
+launcher/downloads/
+launcher/managed.json
+launcher/manifest.json
