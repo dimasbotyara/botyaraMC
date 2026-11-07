@@ -724,7 +724,11 @@ class App(ctk.CTk):
     # ============================================================ ГЛАВНОЕ ОКНО
     def _view_main(self):
         root = self.frame(self, "bg")
-        root.grid_rowconfigure(0, weight=1)
+        # Keep the toolbar in its own fixed-height row; let the main content
+        # occupy the remaining space. This avoids tying content placement to
+        # absolute pixel offsets when the window is resized.
+        root.grid_rowconfigure(0, weight=0)
+        root.grid_rowconfigure(1, weight=1)
         root.grid_columnconfigure(0, weight=1)
 
         # ── Top bar (34px height, aligned with buttons) ──
@@ -765,13 +769,17 @@ class App(ctk.CTk):
         self.button(btns, "⌨", self._open_hotkeys_dialog, primary=False,
                     width=38, height=34).pack(side="right", padx=(0, 8))
 
-        # ── Center hero block (vertically anchored at true center) ──
+        # ── Main content area: centered in the space below the toolbar ──
         hero = self.frame(root, "bg")
-        hero.place(relx=0.5, rely=0.5, anchor="center")
+        hero.grid(row=1, column=0, sticky="nsew")
+        # Center the main hero group itself. Progress/status are positioned
+        # independently so they cannot shift the title, greeting, or Play button.
+        content = self.frame(hero, "bg")
+        content.place(relx=0.5, rely=0.5, anchor="center")
 
-        self.label(hero, "botyaraMC", 56, True, "accent").pack()
-        self.greeting_lbl = self.label(hero, self._greeting, 18, color="subtext")
-        self.greeting_lbl.pack(pady=(2, 10))
+        self.label(content, "botyaraMC", 56, True, "accent").pack()
+        self.greeting_lbl = self.label(content, self._greeting, 20, color="subtext")
+        self.greeting_lbl.pack(pady=(0, 5))
 
         # Quick server switch (if multiple servers)
         self.server_title_lbl = None
@@ -779,7 +787,7 @@ class App(ctk.CTk):
         self._main_srv_map = {}
         servers = self.cfg.get("servers") or []
         if len(servers) > 1:
-            srv_row = self.frame(hero, "bg")
+            srv_row = self.frame(content, "bg")
             srv_row.pack(pady=(0, 6))
 
             def _on_switch_main_srv(chosen):
@@ -799,22 +807,22 @@ class App(ctk.CTk):
             self._refresh_main_server_header()
         else:
             init_srv_title = f"🌐 {srv_name}" if srv_name else ""
-            self.server_title_lbl = self.label(hero, init_srv_title, 14, True, color="text")
+            self.server_title_lbl = self.label(content, init_srv_title, 14, True, color="text")
             if init_srv_title:
                 self.server_title_lbl.pack(pady=(0, 4))
 
         # Badge (mods count, etc.)
-        self.badge_lbl = self.label(hero, self._server_badge_text, 13, color="subtext")
-        self.badge_lbl.pack(pady=(0, 10))
+        self.badge_lbl = self.label(content, self._server_badge_text, 13, color="subtext")
+        self.badge_lbl.pack(pady=(0, 5))
 
         # Live MC server ping badge
-        self.mc_ping_lbl = self.label(hero, "", 13, color="subtext")
-        self.mc_ping_lbl.pack(pady=(0, 20))
+        self.mc_ping_lbl = self.label(content, "", 13, color="subtext")
+        self.mc_ping_lbl.pack(pady=(0, 9))
         self._start_mc_ping_loop()
 
         # Play button
         self.play_btn = self.button(
-            hero, self._play_btn_text, self.on_play,
+            content, self._play_btn_text, self.on_play,
             width=390, height=68,
             font=ctk.CTkFont(size=20, weight="bold"),
         )
@@ -825,12 +833,11 @@ class App(ctk.CTk):
             self._play_hover_t = 1.0
             self._paint_play_button_color()
 
-        # ── Lower container: progress bar (hidden by default) + status ──
-        lower = self.frame(root, "bg")
-        lower.place(relx=0.5, rely=0.5, anchor="center", y=220)
-
+        # Progress/status are separate so they don't pull the hero group off-center.
+        lower = self.frame(hero, "bg")
+        lower.place(relx=0.5, rely=1.0, anchor="s", y=-18)
         self.progress_holder = self.frame(lower, "bg")
-        self.progress_holder.pack(pady=(0, 8))
+        self.progress_holder.pack(pady=(0, 4))
         self.progress = ctk.CTkProgressBar(self.progress_holder, width=400)
         self.T(self.progress, fg_color="surface", progress_color="accent")
         self.progress.set(self._prog)
@@ -838,7 +845,7 @@ class App(ctk.CTk):
             self.progress.pack(pady=(6, 8))
 
         self.status_lbl = self.label(lower, self._status, 14, color="subtext", wraplength=700)
-        self.status_lbl.pack(pady=(6, 0))
+        self.status_lbl.pack(pady=(2, 0))
 
         # Bind R key (and Cyrillic К) for random greeting
         self.bind_all("<Key-r>", lambda e: self._randomize_greeting(e))
