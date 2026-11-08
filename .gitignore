@@ -46,3 +46,5 @@ launcher/cache/
 launcher/downloads/
 launcher/managed.json
 launcher/manifest.json
+*.part
+*.part.sha256

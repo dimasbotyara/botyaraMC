@@ -1,4 +1,5 @@
 """Интерактивный TUI-конфигуратор сервера botyaraMC на базе questionary. Запуск: python tui.py"""
+import re
 import sys
 
 import questionary
@@ -176,7 +177,7 @@ def edit_server_name(cfg, t):
     ans = _ask(questionary.text(
         t["q_name"],
         default=cfg.get("server_name", "botyaraMC"),
-        validate=lambda v: True if v.strip() else "!",
+        validate=lambda v: True if re.fullmatch(r"\d+\.\d+(\.\d+)?", v.strip() or "") else "!",
         style=CATPPUCCIN_STYLE,
     ))
     cfg["server_name"] = ans.strip()[:64]

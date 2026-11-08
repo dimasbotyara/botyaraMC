@@ -18,6 +18,9 @@ def main():
         args = cli.build_parser().parse_args()
         if args.play or args.sync_only or args.detect_java:
             raise SystemExit(cli.run_cli(args))
+        if args.lang:
+            print("botyaraMC: --lang applies to CLI mode; "
+                  "for headless use add --play / --sync-only / --detect-java. Opening GUI…")
 
     from ui import App
     App().mainloop()

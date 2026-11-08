@@ -262,6 +262,14 @@ def ensure_version(mc_dir, mc_version, loader, on_frac=None, cfg=None, server_ja
             if not fv:
                 raise RuntimeError(f"Forge для {mc_version} не найден")
             mll.forge.install_forge_version(fv, str(mc_dir), callback=cb, java=java_for_installer)
+        elif loader == "quilt" and hasattr(mll, "quilt"):
+            mll.quilt.install_quilt(mc_version, str(mc_dir), callback=cb)
+        elif loader == "neoforge":
+            # В старых minecraft-launcher-lib нет ни mod_loader, ни legacy-API для NeoForge:
+            # честно падаем, а не ставим молча ваниллу без модлоадера.
+            raise RuntimeError(
+                "NeoForge требует minecraft-launcher-lib >= 8.0 — обнови зависимости "
+                "(pip install -U minecraft-launcher-lib)")
         else:
             mll.install.install_minecraft_version(mc_version, str(mc_dir), callback=cb)
 
@@ -287,10 +295,15 @@ def _supports_quick_play_multiplayer(mc_dir, version_id):
         seen.add(cur)
         vjson = mc_dir / "versions" / cur / f"{cur}.json"
         try:
-            raw = vjson.read_text(encoding="utf-8")
-            if "is_quick_play_multiplayer" in raw:
+            data = json.loads(vjson.read_text(encoding="utf-8"))
+            feats = data.get("features") or {}
+            if feats.get("is_quick_play_multiplayer"):
                 return True
-            data = json.loads(raw)
+            for arg in ((data.get("arguments") or {}).get("game") or []):
+                if isinstance(arg, dict):
+                    for rule in arg.get("rules") or []:
+                        if (rule.get("features") or {}).get("is_quick_play_multiplayer"):
+                            return True
             cur = data.get("inheritsFrom")
         except (OSError, ValueError):
             break
@@ -369,7 +382,9 @@ def launch(mc_dir, version_id, nickname, server, port, ram_mb, log_path,
     """Запускает процесс Minecraft, ротируя прошлый game.log -> game.prev.log."""
     mc_dir = Path(mc_dir)
     eff_cfg = dict(cfg or cfgmod.load())
-    if ram_mb and "auto_ram" not in (cfg or {}):
+    # Явно переданный ram_mb — жёсткий override (вызывающий код уже посчитал
+    # эффективное значение через effective_ram_mb, поэтому уважаем его всегда).
+    if ram_mb:
         eff_cfg["auto_ram"] = False
         eff_cfg["ram_mb"] = int(ram_mb)
 

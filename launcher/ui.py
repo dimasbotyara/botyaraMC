@@ -878,7 +878,13 @@ class App(ctk.CTk):
             if not self.winfo_exists():
                 return
             manifest = self._last_manifest or cfgmod.load_cache(self.cfg.get("active_server_id") or None)
-            if manifest:
+            if manifest and not manifest.get("auto_join", True):
+                # Хост выключил автовход — статус MC-сервера игроку не нужен, не пингуем.
+                try:
+                    self.mc_ping_lbl.configure(text="")
+                except Exception:
+                    pass
+            elif manifest:
                 srv = manifest.get("server") or {}
                 mchost = srv.get("host")
                 mcport = srv.get("port") or 25565
@@ -917,79 +923,6 @@ class App(ctk.CTk):
         )
         if hasattr(self, "greeting_lbl") and self.greeting_lbl.winfo_exists():
             self.greeting_lbl.configure(text=self._greeting)
-
-    def _show_progress_bar(self, visible):
-        try:
-            if not hasattr(self, "progress") or not self.progress.winfo_exists():
-                return
-            if visible:
-                if not self.progress.winfo_manager():
-                    self.progress.pack(pady=(6, 8))
-            else:
-                if self.progress.winfo_manager():
-                    self.progress.pack_forget()
-        except Exception:
-            pass
-
-    def _set_status(self, text):
-        self._status = text
-        try:
-            self.status_lbl.configure(text=text)
-        except Exception:
-            pass
-
-    def _set_progress(self, f):
-        self._prog = max(0.0, min(1.0, f))
-        try:
-            self.progress.set(self._prog)
-        except Exception:
-            pass
-
-    def _set_play_text(self, text):
-        self._play_btn_text = text
-        try:
-            self.play_btn.configure(text=text)
-        except Exception:
-            pass
-
-    def _refresh_main_server_header(self, fallback_name=""):
-        servers = self.cfg.get("servers") or []
-        om = getattr(self, "_main_srv_om", None)
-        if om is not None and om.winfo_exists() and len(servers) > 1:
-            self._main_srv_map.clear()
-            labels = []
-            cur_lbl = None
-            for s in servers:
-                lb = self._server_label(s)
-                if lb in self._main_srv_map:
-                    lb = f"{lb} [{s['id'][-4:]}]"
-                self._main_srv_map[lb] = s
-                labels.append(lb)
-                if s.get("id") == self.cfg.get("active_server_id"):
-                    cur_lbl = lb
-            om.configure(values=labels)
-            if cur_lbl:
-                om.set(cur_lbl)
-            return
-
-        lbl = getattr(self, "server_title_lbl", None)
-        if lbl is not None and lbl.winfo_exists():
-            active_s = cfgmod.active_server(self.cfg)
-            sname = ((active_s or {}).get("name") or fallback_name or "").strip()
-            if sname:
-                lbl.configure(text=f"🌐 {sname}")
-                if not lbl.winfo_manager():
-                    lbl.pack(pady=(0, 4), before=self.badge_lbl)
-            else:
-                if lbl.winfo_manager():
-                    lbl.pack_forget()
-
-    def _set_badge(self, text):
-        self._server_badge_text = text
-        try:
-            self.badge_lbl.configure(text=text)
-        except Exception:
-            pass
 
     def _show_progress_bar(self, visible):
         try:
@@ -1139,16 +1072,6 @@ class App(ctk.CTk):
                     self._set_status(self._tr("status_offline_cache"))
 
         threading.Thread(target=work, daemon=True).start()
-
-    def _play_done(self):
-        self.playing = False
-        self._show_progress_bar(False)
-        try:
-            self.play_btn.configure(state="normal")
-            self._paint_play_button_color()
-        except Exception:
-            pass
-        self.refresh_download_plan(manual=False)
 
     def on_play(self):
         if self.playing:
@@ -2005,17 +1928,18 @@ class App(ctk.CTk):
         srv_folder_box = self.frame(g, "panel")
         srv_folder_box.grid(row=8, column=1, columnspan=2, sticky="ew", pady=4)
         active_s = cfgmod.active_server(c)
-        client_folder = (active_s or {}).get("client_folder", "")
-        if client_folder:
-            e_srv_folder = self.entry(srv_folder_box, height=34)
-            e_srv_folder.insert(0, client_folder)
-            e_srv_folder.pack(side="left", fill="x", expand=True, padx=(0, 8))
-            btn_rename = self.button(srv_folder_box, self._tr("st_srv_folder_rename"), primary=False, width=120, height=34)
-            btn_rename.pack(side="left", padx=(0, 4))
-            btn_reset = self.button(srv_folder_box, self._tr("st_srv_folder_reset"), primary=False, width=80, height=34)
-            btn_reset.pack(side="left")
-        else:
-            self.label(srv_folder_box, self._tr("st_srv_folder_root"), 13, color="subtext").pack(side="left")
+        # Папка сборки: кастомная (custom_folder) имеет приоритет, иначе — client_folder из манифеста сервера.
+        # Кнопки переименования/сброса доступны всегда: игрок вправе задать свою папку для любого сервера.
+        manifest_cf = (self._last_manifest or {}).get("client_folder", "")
+        shown_folder = (active_s or {}).get("custom_folder", "") or manifest_cf
+        e_srv_folder = self.entry(srv_folder_box, height=34)
+        e_srv_folder.insert(0, shown_folder or self._tr("st_srv_folder_root"))
+        e_srv_folder.configure(state="disabled")
+        e_srv_folder.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        btn_rename = self.button(srv_folder_box, self._tr("st_srv_folder_rename"), primary=False, width=120, height=34)
+        btn_rename.pack(side="left", padx=(0, 4))
+        btn_reset = self.button(srv_folder_box, self._tr("st_srv_folder_reset"), primary=False, width=80, height=34)
+        btn_reset.pack(side="left")
 
         row_lbl(9, self._tr("st_srv_mods_dir"))
         e_srv = self.entry(g, height=34, placeholder_text=self._tr("st_srv_mods_ph"))
@@ -2233,7 +2157,7 @@ class App(ctk.CTk):
         }
         iso_rev = {v: k for k, v in iso_labels.items()}
         om_iso = self.option_menu(g, values=list(iso_labels.values()), width=280)
-        om_iso.set(iso_labels.get(c.get("isolation_mode", "family"), iso_labels["family"]))
+        om_iso.set(iso_labels.get(c.get("isolation_mode", "none"), iso_labels["none"]))
         om_iso.grid(row=21, column=1, sticky="w", pady=4)
         _disable_scroll_on_option_menu(om_iso)
 
@@ -2374,7 +2298,7 @@ class App(ctk.CTk):
             self.label(card_d, self._tr("ren_heading"), 20, True).pack(anchor="w", padx=22, pady=(18, 4))
             self.label(card_d, self._tr("ren_sub"), 12, color="subtext", wraplength=460).pack(anchor="w", padx=22, pady=(0, 14))
             e_new = self.entry(card_d, height=36, placeholder_text=self._tr("ren_ph"))
-            e_new.insert(0, srv.get("client_folder", ""))
+            e_new.insert(0, srv.get("custom_folder", "") or (self._last_manifest or {}).get("client_folder", ""))
             e_new.pack(fill="x", padx=22, pady=(0, 6))
             msg_lbl = self.label(card_d, "", 12, color="subtext", wraplength=460)
             msg_lbl.pack(anchor="w", padx=22)
@@ -2385,16 +2309,28 @@ class App(ctk.CTk):
                     self.msg(msg_lbl, self._tr("ren_err_bad"), "danger")
                     return
                 try:
-                    new_folder = cfgmod.rename_server_folder(c, srv["id"], new_name)
-                    cfgmod.save(c)
-                    # Refresh server list and manifest
+                    mc_dir = mc.find_minecraft_dir(c.get("mc_dir", ""))
+                    ok_r, res_r = cfgmod.rename_server_folder(
+                        c, mc_dir, new_name, server_id=srv["id"], manifest=self._last_manifest)
+                    if not ok_r:
+                        err_key = {"bad_name": "ren_err_bad", "already_exists": "ren_err_exists"}.get(res_r, "ren_err_io")
+                        self.msg(msg_lbl, self._tr(err_key), "danger")
+                        return
+                    # rename_server_folder уже сохранил конфиг; обновляем поле папки прямо в этой форме
+                    try:
+                        e_srv_folder.configure(state="normal")
+                        e_srv_folder.delete(0, "end")
+                        e_srv_folder.insert(0, Path(res_r).name)
+                        e_srv_folder.configure(state="disabled")
+                    except Exception:
+                        pass
                     rebuild_servers_dropdown()
                     self._last_manifest = cfgmod.load_cache(srv["id"])
                     self.msg(autosave_lbl, self._tr("st_saved_ok"), "success")
                     dlg.destroy()
                 except ValueError as ve:
                     self.msg(msg_lbl, str(ve), "danger")
-                except Exception as ex:
+                except Exception:
                     log.exception("rename failed")
                     self.msg(msg_lbl, self._tr("ren_err_io"), "danger")
 
@@ -2409,17 +2345,20 @@ class App(ctk.CTk):
             if not srv:
                 return
             try:
-                new_folder = cfgmod.reset_server_folder(c, srv["id"])
-                cfgmod.save(c)
+                cfgmod.reset_server_folder(c, server_id=srv["id"])  # сохраняет конфиг сам
+                try:
+                    e_srv_folder.configure(state="normal")
+                    e_srv_folder.delete(0, "end")
+                    e_srv_folder.insert(0, (self._last_manifest or {}).get("client_folder", "") or self._tr("st_srv_folder_root"))
+                    e_srv_folder.configure(state="disabled")
+                except Exception:
+                    pass
                 rebuild_servers_dropdown()
                 self._last_manifest = cfgmod.load_cache(srv["id"])
                 self.msg(autosave_lbl, self._tr("st_saved_ok"), "success")
             except Exception as ex:
                 log.exception("reset folder failed")
                 self.msg(err, self._tr("ren_err_io"), "danger")
-
-        if 'btn_rename' in dir() and 'btn_reset' in dir():
-            pass  # handled inline above
 
         def toggle_host(save_after=True):
             st = "normal" if sw_host.get() else "disabled"
@@ -2501,12 +2440,12 @@ class App(ctk.CTk):
                 if srv_dir and Path(srv_dir).is_dir():
                     # Validate uniqueness against other servers
                     active_id = c.get("active_server_id")
-                    ok, dup_name = cfgmod.validate_unique_host_dir(c, srv_dir, exclude_server_id=active_id)
+                    ok, dup_name = cfgmod.validate_unique_host_dir(c, active_id, srv_dir)
                     if not ok:
                         first_error = first_error or self._tr("st_err_host_dup", srv=dup_name)
                     else:
                         # Check if this is the sync server's own folder
-                        if cfgmod.is_sync_server_own_mods_dir(c, srv_dir):
+                        if cfgmod.is_sync_server_own_mods_dir(srv_dir):
                             first_error = first_error or self._tr("st_err_host_sync_own")
                         else:
                             c["is_host"] = True
@@ -2549,7 +2488,7 @@ class App(ctk.CTk):
                 c["mc_dir"] = e_mc.get().strip()
 
             # 9. isolation_mode
-            c["isolation_mode"] = iso_rev.get(om_iso.get(), "family")
+            c["isolation_mode"] = iso_rev.get(om_iso.get(), "none")
 
             # 10. on_launch_action
             c["on_launch_action"] = launch_rev.get(om_launch.get(), "keep")
@@ -2608,10 +2547,9 @@ class App(ctk.CTk):
         om_theme.configure(command=on_theme_change)
         om_lang.configure(command=on_lang_change)
 
-        # Bind rename/reset buttons
-        if client_folder:
-            btn_rename.configure(command=_on_rename_server_folder)
-            btn_reset.configure(command=_on_reset_server_folder)
+        # Bind rename/reset buttons (доступны для любого сервера)
+        btn_rename.configure(command=_on_rename_server_folder)
+        btn_reset.configure(command=_on_reset_server_folder)
 
         for ent in (e_nick, e_host, e_srv, e_ram, e_java, e_extra_jvm, e_mc, e_w, e_h, e_timeout):
             ent.bind("<KeyRelease>", autosave_now, add="+")

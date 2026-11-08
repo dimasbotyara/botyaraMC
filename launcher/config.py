@@ -234,7 +234,9 @@ def find_relocated_server_folder(mc_dir, server_id, sync_host="", sync_port=2545
 def resolve_game_dir(mc_dir, client_folder="", cfg=None, manifest=None, server_id=None):
     """
     Определяет рабочую папку сборки (gameDirectory) по приоритету:
-    1) Кастомная папка этого сервера, заданная игроком в лаунчере (или найденная по botyaramc.json после переименования в Проводнике)
+    1) Кастомная папка этого сервера, заданная игроком в лаунчере (или найденная по botyaramc.json после переименования в Проводнике).
+       Приоритет при поиске существующей папки: home/<имя> раньше instances/<имя>;
+       если папки ещё нет — новой считается home/<имя>.
     2) Папка client_folder от сервера (.minecraft/instances/<имя> или .minecraft/home/<имя>)
     3) Режим разделения версий из настроек игрока:
        - 'none'    -> .minecraft

@@ -1,4 +1,4 @@
 customtkinter>=5.2
-minecraft-launcher-lib>=7.0
+minecraft-launcher-lib>=8.0
 Pillow>=10.0
 psutil>=5.9

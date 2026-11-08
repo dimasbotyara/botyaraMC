@@ -805,3 +805,63 @@ def test_nickname_validation_greetings_multi_server_signout_and_assets(isolated_
     h = int.from_bytes(ihdr[4:8], "big")
     assert (w, h) == (1080, 1080)
 
+
+
+# ============================================================
+# Регрессии по внешнему ревью (хост-режим, rename, дубли, mll)
+# ============================================================
+
+def test_regression_host_validation_and_rename_signatures(tmp_path, monkeypatch):
+    """Ревью #1/#2: сигнатуры config-функций и вызовы из UI должны совпадать."""
+    cfg_dir = tmp_path / "cfg"; cfg_dir.mkdir()
+    monkeypatch.setenv("BOTYARAMC_CONFIG_DIR", str(cfg_dir))
+    cfg = cfgmod.load()
+    cfgmod.add_or_select_server(cfg, "127.0.0.1", 25456, name="TestSrv")
+    sid = cfg["active_server_id"]
+    mc_dir = tmp_path / ".minecraft"; mc_dir.mkdir()
+    host_dir = tmp_path / "hostmods"; host_dir.mkdir()
+
+    # validate_unique_host_dir(cfg, server_id, candidate_dir) — без TypeError
+    ok, _dup = cfgmod.validate_unique_host_dir(cfg, sid, str(host_dir))
+    assert ok is True
+    # is_sync_server_own_mods_dir(path) — ровно 1 аргумент
+    assert cfgmod.is_sync_server_own_mods_dir(str(host_dir)) is False
+
+    # rename_server_folder(cfg, mc_dir, name, server_id=...) -> (True, Path)
+    ok_r, res_r = cfgmod.rename_server_folder(cfg, mc_dir, "MyPack", server_id=sid)
+    assert ok_r is True and Path(res_r).name == "MyPack"
+    srv = cfgmod.active_server(cfgmod.load())
+    assert srv["custom_folder"] == "MyPack"
+    # плохое имя и занятая папка возвращают (False, код), а не падают
+    ok_b, code_b = cfgmod.rename_server_folder(cfg, mc_dir, "bad/name", server_id=sid)
+    assert ok_b is False and code_b == "bad_name"
+
+
+def test_regression_no_duplicate_methods_in_ui():
+    """Ревью #7: в классе App не должно быть продублированных методов."""
+    import ast
+    tree = ast.parse((LAUNCHER_DIR / "ui.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            names = [n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            dups = {n for n in names if names.count(n) > 1}
+            assert not dups, f"дубли методов в {node.name}: {dups}"
+
+
+def test_regression_server_name_sanitized_for_config_txt():
+    """Ревью #8: перевод строки в имени сервера не должен ломать config.txt."""
+    out = C.render_config({"server_name": "Cool\nServer = hacked", "language": "en"}, lang="en")
+    name_lines = [ln for ln in out.splitlines() if ln.startswith("server_name")]
+    assert name_lines == ["server_name = Cool Server = hacked"] or name_lines == ["server_name = Cool Server"]
+    assert "\nServer = hacked" not in out.replace("server_name = Cool Server = hacked", "")
+
+
+def test_regression_quick_play_json_features(tmp_path):
+    """Ревью #14: quickPlay определяется по JSON-features, а не по подстроке."""
+    vdir = tmp_path / "versions" / "1.20.1"; vdir.mkdir(parents=True)
+    (vdir / "1.20.1.json").write_text(json.dumps(
+        {"features": {"is_quick_play_multiplayer": True}}), encoding="utf-8")
+    assert mc._supports_quick_play_multiplayer(tmp_path, "1.20.1") is True
+    (vdir / "1.20.1.json").write_text(json.dumps(
+        {"comment": "is_quick_play_multiplayer mentioned in a comment"}), encoding="utf-8")
+    assert mc._supports_quick_play_multiplayer(tmp_path, "1.20.1") is False

@@ -140,6 +140,10 @@ def _parse_java_version(raw):
     return None
 
 
+def _safe_name(cfg):
+    return " ".join(str((cfg or {}).get("server_name", "botyaraMC")).split())[:64] or "botyaraMC"
+
+
 def render_config(cfg=None, lang=None):
     """Генерирует текст config.txt с комментариями на русском или английском языке."""
     c = dict(DEFAULTS)
@@ -168,7 +172,7 @@ def render_config(cfg=None, lang=None):
 language = en
 
 # Display name of your server shown in players' launchers
-server_name = {c['server_name']}
+server_name = {_safe_name(c)}
 
 # Optional isolated client folder name (leave empty to follow player's folder setting,
 # or set e.g. my_rpg_server to isolate mods/resourcepacks for this server)
@@ -223,7 +227,7 @@ minecraft_port = {c['minecraft_port']}
 language = ru
 
 # Название сервера (отображается у игроков в лаунчере)
-server_name = {c['server_name']}
+server_name = {_safe_name(c)}
 
 # Имя отдельной папки сборки у клиентов (оставь пустым для режима игрока,
 # либо укажи например my_rpg_pack для собственной изолированной папки сервера)
@@ -328,7 +332,9 @@ def load():
     lang = str(raw.get("language", DEFAULTS["language"])).strip().lower()
     cfg["language"] = lang if lang in VALID_LANGS else "ru"
 
-    sname = str(raw.get("server_name", DEFAULTS["server_name"])).strip()
+    # Схлопываем любые пробелы/переводы строк: имя вставляется в config.txt как есть,
+    # перевод строки внутри значения развалил бы формат файла.
+    sname = " ".join(str(raw.get("server_name", DEFAULTS["server_name"])).split())
     cfg["server_name"] = sname[:64] if sname else "botyaraMC"
     cfg["client_folder"] = sanitize_folder_name(raw.get("client_folder", ""))
 
