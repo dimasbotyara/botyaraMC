@@ -865,3 +865,17 @@ def test_regression_quick_play_json_features(tmp_path):
     (vdir / "1.20.1.json").write_text(json.dumps(
         {"comment": "is_quick_play_multiplayer mentioned in a comment"}), encoding="utf-8")
     assert mc._supports_quick_play_multiplayer(tmp_path, "1.20.1") is False
+
+
+def test_regression_tui_validators_not_swapped():
+    """Внешнее замечание: валидатор версии не должен стоять на имени сервера."""
+    import tui as srv_tui
+    # Имя сервера — обычная строка, НЕ обязана выглядеть как версия
+    assert srv_tui.validate_server_name("My Server") is True
+    assert srv_tui.validate_server_name("Сервер друзей") is True
+    assert srv_tui.validate_server_name("   ") == "!"
+    # Версия Minecraft — строгий формат
+    assert srv_tui.validate_mc_version("1.20.1") is True
+    assert srv_tui.validate_mc_version("1.21") is True
+    assert srv_tui.validate_mc_version("My Server") == "!"
+    assert srv_tui.validate_mc_version("") == "!"

@@ -8,6 +8,19 @@ from questionary import Choice, Style
 import mods_index as M
 import srv_config as C
 
+_MC_VERSION_RE = re.compile(r"^\d+\.\d+(\.\d+)?$")
+
+
+def validate_server_name(v):
+    """Имя сервера: любое непустое (например, 'My Server'). НЕ формат версии!"""
+    return True if str(v or "").strip() else "!"
+
+
+def validate_mc_version(v):
+    """Версия Minecraft: формат вида 1.20.1 / 1.21 / 1.16.5."""
+    return True if _MC_VERSION_RE.fullmatch(str(v or "").strip()) else "!"
+
+
 CATPPUCCIN_STYLE = Style([
     ("qmark", "fg:#cba6f7 bold"),
     ("question", "fg:#cdd6f4 bold"),
@@ -177,10 +190,10 @@ def edit_server_name(cfg, t):
     ans = _ask(questionary.text(
         t["q_name"],
         default=cfg.get("server_name", "botyaraMC"),
-        validate=lambda v: True if re.fullmatch(r"\d+\.\d+(\.\d+)?", v.strip() or "") else "!",
+        validate=validate_server_name,
         style=CATPPUCCIN_STYLE,
     ))
-    cfg["server_name"] = ans.strip()[:64]
+    cfg["server_name"] = " ".join(ans.split())[:64]
     C.save(cfg)
 
 
@@ -205,7 +218,7 @@ def edit_mc_version(cfg, t):
     ans = _ask(questionary.text(
         t["q_mc_ver"],
         default=cfg.get("mc_version", "1.20.1"),
-        validate=lambda v: True if v.strip() else "!",
+        validate=validate_mc_version,
         style=CATPPUCCIN_STYLE,
     ))
     cfg["mc_version"] = ans.strip()
