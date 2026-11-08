@@ -289,6 +289,11 @@ def detect_java_installations(mc_dir=None):
 
 
 def mojang_component_for_major(major):
+    """Компонент рантайма Mojang по мажорной версии Java.
+    Ограничение Mojang: новее Java 21 официальных рантаймов не существует,
+    поэтому для major >= 21 возвращается java-runtime-delta (Java 21).
+    Если сервер требует Java 22+, нужна системная Java такой версии —
+    resolve_java найдёт её на шаге проверки установленных (exact-match)."""
     if not major:
         return None
     if major in _MOJANG_RUNTIME_BY_MAJOR:
@@ -322,6 +327,9 @@ def resolve_java(cfg, mc_dir, version_id=None, server_java_version=None, cb=None
 
     # 2. Определяем требуемую версию Java
     req_major = int(server_java_version) if server_java_version else None
+    if req_major and req_major > 21:
+        log.warning("Сервер требует Java %s, но рантаймов Mojang новее 21 нет — "
+                    "ищем системную Java %s, иначе будет использована Java 21", req_major, req_major)
     rt_component = mojang_component_for_major(req_major) if req_major else None
 
     if version_id:

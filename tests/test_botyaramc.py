@@ -852,8 +852,7 @@ def test_regression_server_name_sanitized_for_config_txt():
     """Ревью #8: перевод строки в имени сервера не должен ломать config.txt."""
     out = C.render_config({"server_name": "Cool\nServer = hacked", "language": "en"}, lang="en")
     name_lines = [ln for ln in out.splitlines() if ln.startswith("server_name")]
-    assert name_lines == ["server_name = Cool Server = hacked"] or name_lines == ["server_name = Cool Server"]
-    assert "\nServer = hacked" not in out.replace("server_name = Cool Server = hacked", "")
+    assert name_lines == ["server_name = Cool Server = hacked"]
 
 
 def test_regression_quick_play_json_features(tmp_path):
@@ -879,3 +878,29 @@ def test_regression_tui_validators_not_swapped():
     assert srv_tui.validate_mc_version("1.21") is True
     assert srv_tui.validate_mc_version("My Server") == "!"
     assert srv_tui.validate_mc_version("") == "!"
+
+
+def test_regression_alias_map_is_stable_when_mods_added(tmp_path, monkeypatch):
+    """Ревью-2 #1: алиас скрытого мода не должен меняться при добавлении соседних модов."""
+    import mods_index as MI
+    mods_dir = tmp_path / "mods"; mods_dir.mkdir()
+    monkeypatch.setattr(MI, "MODS_DIR", mods_dir)
+    monkeypatch.setattr(MI, "_ALIASES_FILE", tmp_path / ".hide_aliases.json")
+    monkeypatch.setattr(MI.C, "get_hide_salt", lambda: "test-salt")
+    MI._cache.clear()
+    cfg = {"hide_mods": "words", "hide_mods_list": []}
+    for name in ("alpha.jar", "beta.jar", "gamma.jar"):
+        (mods_dir / name).write_bytes(b"jar-" + name.encode())
+    first = {m["name"] for m in MI.scan_mods(cfg)}
+    assert len(first) == 3 and not ({"alpha.jar", "beta.jar", "gamma.jar"} & first)
+    (mods_dir / "aaa-new.jar").write_bytes(b"jar-new")  # сортируется первым
+    second = {m["name"] for m in MI.scan_mods(cfg)}
+    assert first <= second and len(second) == 4  # старые алиасы не перетасовались
+
+
+def test_regression_hide_list_with_comma_roundtrip():
+    """Ревью-2 #3: имя мода с запятой переживает render->load через JSON."""
+    assert C.parse_hide_list(C.format_hide_list(["foo,bar.jar", "x.jar"])) == ["foo,bar.jar", "x.jar"]
+    assert C.parse_hide_list("a.jar, b.jar") == ["a.jar", "b.jar"]  # старый формат
+    out = C.render_config({"hide_mods_list": ["foo,bar.jar"], "language": "en"}, lang="en")
+    assert 'hide_mods_list = ["foo,bar.jar"]' in out

@@ -35,6 +35,7 @@ game.log
 # ─── Сервер: генерируется сам при первом запуске ──────────────────────
 server/config.txt
 server/.hide_salt
+server/.hide_aliases.json
 server/mods/*.jar
 server/mods/*.zip
 !server/mods/.gitkeep

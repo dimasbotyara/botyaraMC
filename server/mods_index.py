@@ -1,11 +1,34 @@
 """Индекс модов и ресурспаков: SHA-256 с кэшем + скрытие (обфускация) имён модов."""
 import hashlib
 import hmac
+import json
 import threading
 from pathlib import Path
 
 import srv_config as C
 from srv_config import MODS_DIR, RESOURCEPACKS_DIR
+
+_ALIASES_FILE = Path(__file__).resolve().parent / ".hide_aliases.json"
+
+
+def _load_alias_map():
+    """Персистентная карта "mode:real_name" -> alias. Стабильна между запусками
+    и при добавлении/удалении соседних модов (алиас не перетасовывается)."""
+    try:
+        data = json.loads(_ALIASES_FILE.read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_alias_map(m):
+    try:
+        tmp = _ALIASES_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1, sort_keys=True), encoding="utf-8")
+        tmp.replace(_ALIASES_FILE)
+    except OSError:
+        pass
+
 
 _cache = {}
 _rp_cache = {}
@@ -95,6 +118,17 @@ def scan_mods(cfg=None):
             if not _should_hide(p.name, hide_mode, hide_list):
                 used_names.add(p.name.lower())
 
+        # Стабильные алиасы: восстанавливаем сохранённые; новые генерим только для новых модов.
+        alias_map = _load_alias_map()
+        alias_dirty = False
+        assigned = {}  # real_name -> alias
+        for p in files:
+            if _should_hide(p.name, hide_mode, hide_list):
+                saved = alias_map.get(f"{hide_mode}:{p.name}")
+                if saved and saved.lower() not in used_names and saved.lower() not in {v.lower() for v in assigned.values()}:
+                    assigned[p.name] = saved
+                    used_names.add(saved.lower())
+
         for p in files:
             try:
                 st = p.stat()
@@ -103,13 +137,30 @@ def scan_mods(cfg=None):
                 if not cached or cached[0] != key:
                     cached = (key, _sha256(p))
                     _cache[p.name] = cached
-                pub_name = (_make_alias(p.name, hide_mode, salt, used_names)
-                            if _should_hide(p.name, hide_mode, hide_list) else p.name)
+                if _should_hide(p.name, hide_mode, hide_list):
+                    pub_name = assigned.get(p.name)
+                    if not pub_name:
+                        pub_name = _make_alias(p.name, hide_mode, salt, used_names)
+                        assigned[p.name] = pub_name
+                    if alias_map.get(f"{hide_mode}:{p.name}") != pub_name:
+                        alias_map[f"{hide_mode}:{p.name}"] = pub_name
+                        alias_dirty = True
+                else:
+                    pub_name = p.name
                 new_map[pub_name] = p
                 result.append({"name": pub_name, "sha256": cached[1], "size": st.st_size})
                 seen.add(p.name)
             except OSError:
                 continue
+
+        # Чистим карту от удалённых модов и сохраняем, если что-то изменилось
+        live_keys = {f"{hide_mode}:{pn}" for pn in seen}
+        for k in list(alias_map):
+            if k.split(":", 1)[0] == hide_mode and k not in live_keys:
+                del alias_map[k]
+                alias_dirty = True
+        if alias_dirty:
+            _save_alias_map(alias_map)
 
         for name in list(_cache):
             if name not in seen:

@@ -872,6 +872,13 @@ class App(ctk.CTk):
                 pass
         self._mc_ping_job = self.after(5000, self._update_mc_ping)
 
+    def _apply_mc_ping_text(self, txt):
+        try:
+            if self.winfo_exists():
+                self.mc_ping_lbl.configure(text=txt)
+        except Exception:
+            pass
+
     def _update_mc_ping(self):
         self._mc_ping_job = None
         try:
@@ -888,15 +895,27 @@ class App(ctk.CTk):
                 srv = manifest.get("server") or {}
                 mchost = srv.get("host")
                 mcport = srv.get("port") or 25565
-                if mchost:
-                    # Use sync_host as fallback for "auto"
-                    result = mc.ping_mc_server(mchost, mcport, sync_host=self.cfg.get("sync_host", ""), timeout=1.5)
+                # Пинг — блокирующий сокет (до 1.5 c при мёртвом сервере): только в фоне,
+                # иначе главный поток Tk фризится каждые 10 секунд.
+                if mchost and not getattr(self, "_mc_ping_inflight", False):
+                    self._mc_ping_inflight = True
+                    sync_host = self.cfg.get("sync_host", "")
                     lang = self._lang()
-                    if result.get("online"):
-                        txt = self._tr("mc_ping_online", on=result["players_online"], mx=result["players_max"], ms=result["latency_ms"])
-                    else:
-                        txt = self._tr("mc_ping_offline")
-                    self.mc_ping_lbl.configure(text=txt)
+
+                    def _ping_bg():
+                        try:
+                            result = mc.ping_mc_server(mchost, mcport, sync_host=sync_host, timeout=1.5)
+                            if result.get("online"):
+                                txt = self._tr("mc_ping_online", on=result["players_online"], mx=result["players_max"], ms=result["latency_ms"])
+                            else:
+                                txt = self._tr("mc_ping_offline")
+                        except Exception:
+                            txt = ""
+                        self._mc_ping_inflight = False
+                        if txt:
+                            self.post(self._apply_mc_ping_text, txt)
+
+                    threading.Thread(target=_ping_bg, daemon=True).start()
         except Exception:
             pass
         self._mc_ping_job = self.after(10000, self._update_mc_ping)
@@ -1133,6 +1152,8 @@ class App(ctk.CTk):
                 self._last_manifest = manifest
             else:
                 manifest = cfgmod.load_cache(server_id=srv_id)
+                if manifest is not None:
+                    P(self._set_status, i18n.tr(lang, "status_offline_cache"))
             if manifest is None:
                 P(self._set_status, i18n.tr(lang, "status_unreachable"))
                 return
@@ -2398,9 +2419,8 @@ class App(ctk.CTk):
         def on_lang_change(chosen_lang_lbl):
             new_lang = lang_rev.get(chosen_lang_lbl, "ru")
             if new_lang != self._lang():
-                autosave_now()
                 c["language"] = new_lang
-                cfgmod.save(c)
+                autosave_now()  # один сейв: и язык, и остальные поля формы
                 self.show("settings")
 
         def autosave_now(*_a):

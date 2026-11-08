@@ -120,6 +120,10 @@ def ping_mc_server(host, port=25565, sync_host="", timeout=2.0):
             tcp_ms = max(1, round((time.perf_counter() - t0) * 1000))
 
             host_bytes = connect_host.encode("utf-8")
+            # 760 = протокол 1.19.2. Для Server List Ping этого достаточно: ванильные
+            # серверы и большинство прокси отвечают на статус независимо от версии
+            # протокола. Строгие прокси с protocol-version-check могут не ответить —
+            # тогда пинг просто покажет "offline", на подключение игры это не влияет.
             handshake_payload = (
                 b"\x00"
                 + _pack_varint(760)

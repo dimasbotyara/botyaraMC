@@ -375,7 +375,7 @@ def edit_hide_mods(cfg, t):
                     default=", ".join(cfg.get("hide_mods_list") or []),
                     style=CATPPUCCIN_STYLE,
                 ))
-                cfg["hide_mods_list"] = [x.strip() for x in raw.split(",") if x.strip()]
+                cfg["hide_mods_list"] = C.parse_hide_list(raw)
     C.save(cfg)
 
 

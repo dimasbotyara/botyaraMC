@@ -1,4 +1,5 @@
 """Чтение, сохранение и локализация (RU / EN) config.txt для sync-сервера botyaraMC."""
+import json
 import os
 import re
 import secrets
@@ -154,7 +155,7 @@ def render_config(cfg=None, lang=None):
         lg = "ru"
 
     java_val = str(c["java_version"]) if c.get("java_version") else "auto"
-    hide_list_val = ", ".join(c.get("hide_mods_list") or [])
+    hide_list_val = format_hide_list(c.get("hide_mods_list") or [])
     del_mods_val = "true" if c.get("delete_user_mods") else "false"
     serve_bg_val = "true" if c.get("serve_background", True) else "false"
     auto_join_val = "true" if c.get("auto_join", True) else "false"
@@ -314,6 +315,30 @@ def get_hide_salt():
     return val
 
 
+def format_hide_list(names):
+    """Сериализация списка скрываемых модов в config.txt.
+    JSON — чтобы имена файлов с запятой (легальны в .jar) не разваливали список."""
+    names = [str(x) for x in (names or []) if str(x).strip()]
+    return json.dumps(names, ensure_ascii=False) if names else ""
+
+
+def parse_hide_list(raw):
+    """Обратно совместимый парсер: JSON-список или старый формат через запятую."""
+    if isinstance(raw, (list, tuple)):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            data = json.loads(text)
+            if isinstance(data, list):
+                return [str(x).strip() for x in data if str(x).strip()]
+        except ValueError:
+            pass
+    return [x.strip() for x in text.split(",") if x.strip()]
+
+
 def load():
     cfg = dict(DEFAULTS)
     cfg["hide_mods_list"] = []
@@ -351,11 +376,7 @@ def load():
 
     cfg["java_version"] = _parse_java_version(raw.get("java_version", "auto"))
     cfg["hide_mods"] = _parse_hide_mode(raw.get("hide_mods", "none"))
-    raw_list = raw.get("hide_mods_list", "")
-    if isinstance(raw_list, str) and raw_list.strip():
-        cfg["hide_mods_list"] = [x.strip() for x in raw_list.split(",") if x.strip()]
-    else:
-        cfg["hide_mods_list"] = []
+    cfg["hide_mods_list"] = parse_hide_list(raw.get("hide_mods_list", ""))
 
     cfg["delete_user_mods"] = _parse_bool(raw.get("delete_user_mods"), False)
     cfg["serve_background"] = _parse_bool(raw.get("serve_background"), True)
