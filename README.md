@@ -32,6 +32,7 @@ No more sending 500 MB `.zip` archives over Discord or Telegram every time you a
 
 ## 🧭 Table of Contents
 
+- [Screenshots](#-screenshots)
 - [Features](#-features)
 - [How Mod Management, Server Switching & Instance Folders Work](#-how-mod-management-server-switching--instance-folders-work)
 - [Repository Structure](#-repository-structure)
@@ -43,6 +44,19 @@ No more sending 500 MB `.zip` archives over Discord or Telegram every time you a
 - [Color Themes](#-color-themes)
 - [Config & Log Locations + Building a Standalone `.exe`](#-config--log-locations--building-a-standalone-exe)
 - [Running Tests](#-running-tests)
+
+---
+
+## 📸 Screenshots
+
+<p align="center">
+  <img src="screenshots/main-en.png" alt="Main screen" width="49%"/>
+  <img src="screenshots/settings-en.png" alt="Settings" width="49%"/>
+</p>
+<p align="center">
+  <img src="screenshots/hotkeys-en.png" alt="Hotkeys dialog" width="49%"/>
+  <img src="screenshots/wizard-nick-en.png" alt="First-run wizard: nickname" width="49%"/>
+</p>
 
 ---
 
