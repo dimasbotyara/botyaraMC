@@ -768,10 +768,16 @@ class App(ctk.CTk):
         # ── Main content area: centered in the space below the toolbar ──
         hero = self.frame(root, "bg")
         hero.grid(row=1, column=0, sticky="nsew")
-        # Center the main hero group itself. Progress/status are positioned
-        # independently so they cannot shift the title, greeting, or Play button.
+        # Use a three-row grid: the centered hero sits between equal top and
+        # bottom reserves. The fixed bottom lane keeps status/progress from
+        # covering the Play button or stealing its pointer events.
+        status_lane_h = 88
+        hero.grid_rowconfigure(0, weight=1, minsize=status_lane_h)
+        hero.grid_rowconfigure(1, weight=0)
+        hero.grid_rowconfigure(2, weight=1)
+        hero.grid_columnconfigure(0, weight=1)
         content = self.frame(hero, "bg")
-        content.place(relx=0.5, rely=0.5, anchor="center")
+        content.grid(row=1, column=0)
 
         self.label(content, "botyaraMC", 56, True, "accent").pack()
         self.greeting_lbl = self.label(content, self._greeting, 20, color="subtext")
@@ -829,10 +835,12 @@ class App(ctk.CTk):
             self._play_hover_t = 1.0
             self._paint_play_button_color()
 
-        # Progress/status are separate so they don't pull the hero group off-center.
-        lower = self.frame(hero, "bg")
-        lower.place(relx=0.5, rely=1.0, anchor="s", y=-18)
-        self.progress_holder = self.frame(lower, "bg")
+        # Reserve a small fixed lane below the hero instead of overlaying it.
+        lower = self.frame(hero, "bg", width=780, height=80)
+        lower.pack_propagate(False)
+        lower.grid(row=2, column=0, sticky="n", pady=(8, 0))
+        self.progress_holder = self.frame(lower, "bg", width=400, height=20)
+        self.progress_holder.pack_propagate(False)
         self.progress_holder.pack(pady=(0, 4))
         self.progress = ctk.CTkProgressBar(self.progress_holder, width=400)
         self.T(self.progress, fg_color="surface", progress_color="accent")
