@@ -2260,41 +2260,8 @@ class App(ctk.CTk):
             sw_bg.select()
         sw_bg.grid(row=23, column=1, columnspan=2, sticky="w", pady=4)
 
-        # --- Linux: GameMode & MangoHud ---
-        import platform
-        if platform.system().lower() == "linux":
-            section(24, self._tr("st_sec_linux"))
-
-            # GameMode
-            row_lbl(25, self._tr("st_gamemode"))
-            has_gm = mc.has_gamemode()
-            sw_gm = ctk.CTkSwitch(g, text=self._tr("st_gamemode_on" if has_gm else "st_gamemode_off"))
-            self.T(sw_gm, fg_color="surface_hover", progress_color="accent", button_color="text",
-                   button_hover_color="accent_hover", text_color="text")
-            if not has_gm:
-                sw_gm.configure(state="disabled")
-            if c.get("use_gamemode", False) and has_gm:
-                sw_gm.select()
-            sw_gm.grid(row=25, column=1, columnspan=2, sticky="w", pady=4)
-
-            # MangoHud
-            row_lbl(26, self._tr("st_mangohud"))
-            has_mh = mc.has_mangohud()
-            sw_mh = ctk.CTkSwitch(g, text=self._tr("st_mangohud_on" if has_mh else "st_mangohud_off"))
-            self.T(sw_mh, fg_color="surface_hover", progress_color="accent", button_color="text",
-                   button_hover_color="accent_hover", text_color="text")
-            if not has_mh:
-                sw_mh.configure(state="disabled")
-            if c.get("use_mangohud", False) and has_mh:
-                sw_mh.select()
-            sw_mh.grid(row=26, column=1, columnspan=2, sticky="w", pady=4)
-
-            linux_section_end = 26
-        else:
-            linux_section_end = 23
-
         # Режим окна игры
-        row_lbl(linux_section_end + 1, self._tr("st_win_mode"))
+        row_lbl(24, self._tr("st_win_mode"))
         wm_labels = {
             "default": self._tr("win_default"),
             "fullscreen": self._tr("win_fullscreen"),
@@ -2303,12 +2270,12 @@ class App(ctk.CTk):
         wm_rev = {v: k for k, v in wm_labels.items()}
         om_win = self.option_menu(g, values=list(wm_labels.values()), width=230)
         om_win.set(wm_labels.get(c.get("window_mode", "default"), wm_labels["default"]))
-        om_win.grid(row=linux_section_end + 1, column=1, sticky="w", pady=4)
+        om_win.grid(row=24, column=1, sticky="w", pady=4)
         _disable_scroll_on_option_menu(om_win)
 
-        row_lbl(linux_section_end + 2, self._tr("st_win_size"))
+        row_lbl(25, self._tr("st_win_size"))
         res_row = self.frame(g, "panel")
-        res_row.grid(row=linux_section_end + 2, column=1, columnspan=2, sticky="w", pady=4)
+        res_row.grid(row=25, column=1, columnspan=2, sticky="w", pady=4)
         e_w = self.entry(res_row, width=78, height=32)
         e_w.insert(0, str(c.get("window_width", 1280)))
         e_w.pack(side="left")
@@ -2334,19 +2301,52 @@ class App(ctk.CTk):
                 font=ctk.CTkFont(size=11),
             ).pack(side="left", padx=2)
 
-        row_lbl(linux_section_end + 3, self._tr("st_timeout"))
+        row_lbl(26, self._tr("st_timeout"))
         to_row = self.frame(g, "panel")
-        to_row.grid(row=linux_section_end + 3, column=1, columnspan=2, sticky="w", pady=4)
+        to_row.grid(row=26, column=1, columnspan=2, sticky="w", pady=4)
         e_timeout = self.entry(to_row, width=86, height=32)
         e_timeout.insert(0, str(c.get("launch_timeout", 120)))
         e_timeout.pack(side="left")
         self.label(to_row, self._tr("st_timeout_hint"), 12, color="subtext").pack(
             side="left", padx=10)
 
+        # --- Linux: GameMode & MangoHud ---
+        import platform
+        if platform.system().lower() == "linux":
+            section(27, self._tr("st_sec_linux"))
+
+            # GameMode
+            row_lbl(28, self._tr("st_gamemode"))
+            has_gm = mc.has_gamemode()
+            sw_gm = ctk.CTkSwitch(g, text=self._tr("st_gamemode_on" if has_gm else "st_gamemode_off"))
+            self.T(sw_gm, fg_color="surface_hover", progress_color="accent", button_color="text",
+                   button_hover_color="accent_hover", text_color="text")
+            if not has_gm:
+                sw_gm.configure(state="disabled")
+            if c.get("use_gamemode", False) and has_gm:
+                sw_gm.select()
+            sw_gm.grid(row=28, column=1, columnspan=2, sticky="w", pady=4)
+
+            # MangoHud
+            row_lbl(29, self._tr("st_mangohud"))
+            has_mh = mc.has_mangohud()
+            sw_mh = ctk.CTkSwitch(g, text=self._tr("st_mangohud_on" if has_mh else "st_mangohud_off"))
+            self.T(sw_mh, fg_color="surface_hover", progress_color="accent", button_color="text",
+                   button_hover_color="accent_hover", text_color="text")
+            if not has_mh:
+                sw_mh.configure(state="disabled")
+            if c.get("use_mangohud", False) and has_mh:
+                sw_mh.select()
+            sw_mh.grid(row=29, column=1, columnspan=2, sticky="w", pady=4)
+
+            linux_section_end = 29
+        else:
+            linux_section_end = 26
+
         # --- Секция 4: Выход из аккаунта и удаление конфигов ---
-        section(linux_section_end + 4, self._tr("st_sec_account"))
+        section(linux_section_end + 1, self._tr("st_sec_account"))
         acc_box = self.frame(g, "panel")
-        acc_box.grid(row=linux_section_end + 5, column=0, columnspan=3, sticky="ew", pady=(2, 8))
+        acc_box.grid(row=linux_section_end + 2, column=0, columnspan=3, sticky="ew", pady=(2, 8))
         self.label(acc_box, self._tr("st_signout_desc"), 12, color="subtext", wraplength=620).pack(
             anchor="w", pady=(0, 8))
         self.danger_button(
@@ -2356,7 +2356,7 @@ class App(ctk.CTk):
         ).pack(anchor="w")
 
         err = self.label(g, "", 13, color="danger", wraplength=680)
-        err.grid(row=linux_section_end + 6, column=0, columnspan=3, sticky="w", pady=(6, 4))
+        err.grid(row=linux_section_end + 3, column=0, columnspan=3, sticky="w", pady=(6, 4))
 
         # --- Логика переключателей и автосохранения ---
         ready_for_autosave = [False]
