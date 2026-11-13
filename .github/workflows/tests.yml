@@ -55,7 +55,7 @@ jobs:
       - name: Syntax check (py_compile)
         run: python -m py_compile server/*.py launcher/*.py tests/*.py
 
-      - name: Lint (ruff: syntax errors, pyflakes, undefined names)
+      - name: Lint (ruff — syntax errors, pyflakes, undefined names)
         run: ruff check launcher server tests --select E9,F63,F7,F82
 
       - name: Run full test suite (Server + Sync + CLI + Crash Parser + UI)
