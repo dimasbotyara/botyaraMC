@@ -3,6 +3,7 @@ import json
 import os
 import re
 import secrets
+import threading
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
@@ -10,6 +11,11 @@ CONFIG_FILE = BASE / "config.txt"
 MODS_DIR = BASE / "mods"
 RESOURCEPACKS_DIR = BASE / "resourcepacks"
 SALT_FILE = BASE / ".hide_salt"
+
+# Кэши config.txt и соли: валидируются по mtime, каждый вызов load() возвращает копию
+_cache_lock = threading.Lock()
+_cfg_cache = {}
+_salt_cache = {}
 
 VALID_LOADERS = ("fabric", "forge", "neoforge", "quilt", "none")
 VALID_LANGS = ("ru", "en")
@@ -284,6 +290,7 @@ def save(cfg, lang=None):
     tmp = CONFIG_FILE.with_suffix(".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, CONFIG_FILE)
+    _invalidate_cache()
 
 
 def ensure_files(lang="ru"):
@@ -299,19 +306,32 @@ def ensure_files(lang="ru"):
 
 
 def get_hide_salt():
-    """Стабильная секретная соль сервера для обфускации имён модов."""
+    """Стабильная секретная соль сервера для обфускации имён модов (кэшируется по mtime)."""
+    try:
+        mt = SALT_FILE.stat().st_mtime_ns
+    except OSError:
+        mt = None
+    with _cache_lock:
+        if _salt_cache.get("mt") == mt and mt is not None:
+            return _salt_cache["val"]
+
+    val = None
     try:
         if SALT_FILE.is_file():
-            val = SALT_FILE.read_text(encoding="utf-8").strip()
-            if len(val) >= 16:
-                return val
+            val = SALT_FILE.read_text(encoding="utf-8").strip() or None
     except OSError:
         pass
-    val = secrets.token_hex(16)
-    try:
-        SALT_FILE.write_text(val + "\n", encoding="utf-8")
-    except OSError:
-        pass
+    if val is None or len(val) < 16:
+        val = secrets.token_hex(16)
+        try:
+            SALT_FILE.write_text(val + "\n", encoding="utf-8")
+            os.chmod(SALT_FILE, 0o600)  # соль - секрет: только для глаз владельца
+        except OSError:
+            pass
+
+    with _cache_lock:
+        _salt_cache["mt"] = mt
+        _salt_cache["val"] = val
     return val
 
 
@@ -340,6 +360,31 @@ def parse_hide_list(raw):
 
 
 def load():
+    """Читает config.txt (кэшируется по mtime файла) и возвращает копию настроек."""
+    try:
+        mt = CONFIG_FILE.stat().st_mtime_ns
+    except OSError:
+        mt = None
+    with _cache_lock:
+        cached = _cfg_cache.get("v")
+        if cached is not None and cached[0] == mt:
+            out = dict(cached[1])
+            out["hide_mods_list"] = list(cached[1]["hide_mods_list"])
+            return out
+        cfg = _load_uncached()
+        _cfg_cache["v"] = (mt, cfg)
+        out = dict(cfg)
+        out["hide_mods_list"] = list(cfg["hide_mods_list"])
+        return out
+
+
+def _invalidate_cache():
+    with _cache_lock:
+        _cfg_cache["v"] = None
+        _salt_cache.clear()
+
+
+def _load_uncached():
     cfg = dict(DEFAULTS)
     cfg["hide_mods_list"] = []
     raw = {}
@@ -363,11 +408,19 @@ def load():
     cfg["server_name"] = sname[:64] if sname else "botyaraMC"
     cfg["client_folder"] = sanitize_folder_name(raw.get("client_folder", ""))
 
-    for key in ("http_port", "discovery_port", "minecraft_port", "rate_limit_per_min"):
+    # Порты строго 1..65535 (0 биндит случайный порт и ломает UDP-анонсы, >65535 падает на старте)
+    for key in ("http_port", "discovery_port", "minecraft_port"):
         try:
-            cfg[key] = max(0, int(raw.get(key, DEFAULTS[key])))
+            val = int(raw.get(key, DEFAULTS[key]))
         except (TypeError, ValueError):
-            cfg[key] = DEFAULTS[key]
+            val = DEFAULTS[key]
+        cfg[key] = val if 1 <= val <= 65535 else DEFAULTS[key]
+
+    try:
+        rl = int(raw.get("rate_limit_per_min", DEFAULTS["rate_limit_per_min"]))
+    except (TypeError, ValueError):
+        rl = DEFAULTS["rate_limit_per_min"]
+    cfg["rate_limit_per_min"] = rl if 0 <= rl <= 1_000_000 else DEFAULTS["rate_limit_per_min"]
 
     cfg["mc_version"] = str(raw.get("mc_version", DEFAULTS["mc_version"])).strip() or DEFAULTS["mc_version"]
     cfg["loader"] = str(raw.get("loader", DEFAULTS["loader"])).strip().lower()
@@ -389,5 +442,6 @@ def load():
         if ":" in raw_mc_srv and "minecraft_port" not in raw:
             cfg["minecraft_port"] = parsed_mc[1]
     else:
-        cfg["minecraft_server"] = raw_mc_srv or "auto"
+        # Невалидный адрес не должен уезжать к клиентам в /manifest как есть
+        cfg["minecraft_server"] = "auto"
     return cfg

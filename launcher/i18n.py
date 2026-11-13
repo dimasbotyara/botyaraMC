@@ -299,6 +299,8 @@ def format_greeting_template(template, name=""):
             .replace(" {nick}", "")
             .replace("{nick}", "")
         )
+    # «Утренний — лучший !» -> «Утренний — лучший!»: подчищаем остатки перед пунктуацией
+    res = re.sub(r"\s+([!?,.:;])", r"\1", res)
     return re.sub(r"\s{2,}", " ", res).strip()
 
 
@@ -464,6 +466,7 @@ TEXTS = {
         "log_default_hdr": "📄 Полный лог игры",
         "log_lines": "{n} строк",
         "log_empty": "(Пусто)",
+        "log_tail_notice": "Лог слишком большой — показан только его хвост. Кнопки Copy и Share используют полный лог.",
         "log_open_browser": "Открыть в браузере 🌐",
         "log_copied": "Полный лог скопирован в буфер обмена 📋",
         "log_sharing": "Отправляем… ⏳",
@@ -708,6 +711,7 @@ TEXTS = {
         "log_default_hdr": "📄 Full Game Log",
         "log_lines": "{n} lines",
         "log_empty": "(Empty)",
+        "log_tail_notice": "Log is too large — only the tail is shown. Copy and Share still use the full log.",
         "log_open_browser": "Open in browser 🌐",
         "log_copied": "Full log copied to clipboard 📋",
         "log_sharing": "Uploading… ⏳",
@@ -854,4 +858,10 @@ TEXTS = {
 def tr(lang, key, **kwargs):
     lg = lang if lang in TEXTS else "ru"
     template = TEXTS[lg].get(key) or TEXTS["ru"].get(key, key)
-    return template.format(**kwargs) if kwargs else template
+    if not kwargs:
+        return template
+    try:
+        return template.format(**kwargs)
+    except (KeyError, IndexError, ValueError):
+        # Битый плейсхолдер в переводе не должен ронять построение интерфейса
+        return template

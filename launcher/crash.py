@@ -24,10 +24,12 @@ _CRASH_MARKERS = (
 )
 
 _PRIVACY_RULES = (
-    (re.compile(r"C:\\Users\\([^\\]+)\\", re.I), r"C:\\Users\\********\\"),
-    (re.compile(r"C:/Users/([^/]+)/", re.I), r"C:/Users/********/"),
-    (re.compile(r"(?<!\w)/home/[^/\s]+/"), "/home/********/"),
-    (re.compile(r"(?<!\w)/Users/[^/\s]+/"), "/Users/********/"),
+    # Windows-профили на любом диске (C:\Users\Name\..., а также пути, оканчивающиеся
+    # на имя пользователя без хвостового разделителя — частый случай в hs_err логах)
+    (re.compile(r"[A-Z]:\\Users\\[^\\;\s\"')]+", re.I), "C:\\Users\\********"),
+    (re.compile(r"[A-Z]:/Users/[^/;\s\"')]+", re.I), "C:/Users/********"),
+    (re.compile(r"(?<![\w/])/home/[^/;\s\"')]+"), "/home/********"),
+    (re.compile(r"(?<![\w/])/Users/[^/;\s\"')]+"), "/Users/********"),
     (re.compile(r"--accessToken\s+\S+", re.I), "--accessToken ****************"),
     (re.compile(r"\(Session ID is token:[^)]+\)", re.I), "(Session ID is token:****************)"),
 )
@@ -49,11 +51,12 @@ def _read_text_safe(path):
         raw = Path(path).read_bytes()
     except OSError:
         return ""
-    for enc in ("utf-8", "cp1251", "latin-1"):
+    for enc in ("utf-8", "cp1251"):
         try:
             return raw.decode(enc)
         except UnicodeDecodeError:
             continue
+    # latin-1 тут не нужен: он декодирует любой байт и был недостижимой веткой
     return raw.decode("utf-8", errors="replace")
 
 
@@ -393,7 +396,8 @@ def sanitize_and_truncate_for_mclogs(content):
         text = "(Empty log)"
 
     for pattern, repl in _PRIVACY_RULES:
-        text = pattern.sub(repl, text)
+        # lambda-обёртка: в replacement-строке re.sub трактует \U как эскейп
+        text = pattern.sub(lambda m, r=repl: r, text)
 
     lines = text.splitlines()
     if len(lines) > MCLOGS_MAX_LINES:
@@ -454,7 +458,7 @@ def upload_to_mclogs(content, mc_version="", loader="", exit_code=None, lang="ru
         try:
             err_body = e.read().decode("utf-8", errors="replace")
             err_json = json.loads(err_body)
-            if err_json.get("error"):
+            if isinstance(err_json, dict) and err_json.get("error"):
                 msg = f"mclo.gs error ({e.code}): {err_json['error']}" if en else f"mclo.gs вернул ошибку ({e.code}): {err_json['error']}"
                 raise RuntimeError(msg) from e
         except ValueError:
@@ -465,7 +469,16 @@ def upload_to_mclogs(content, mc_version="", loader="", exit_code=None, lang="ru
         msg = f"Failed to reach mclo.gs: {e}" if en else f"Не удалось подключиться к mclo.gs: {e}"
         raise RuntimeError(msg) from e
 
-    data = json.loads(raw_resp)
+    # Кэптивный портал/прокси может вернуть 200 с HTML — сообщаем по-человечески
+    try:
+        data = json.loads(raw_resp)
+    except ValueError:
+        raise RuntimeError(
+            "mclo.gs returned a non-JSON response (check your internet connection)"
+            if en else
+            "mclo.gs вернул не-JSON ответ (проверь подключение к интернету)")
+    if not isinstance(data, dict):
+        raise RuntimeError("Unknown mclo.gs response" if en else "Неизвестный ответ от mclo.gs")
     if not data.get("success") or not data.get("url"):
         raise RuntimeError(data.get("error") or ("Unknown mclo.gs response" if en else "Неизвестный ответ от mclo.gs"))
 
@@ -474,4 +487,6 @@ def upload_to_mclogs(content, mc_version="", loader="", exit_code=None, lang="ru
         "url": data["url"],
         "raw": data.get("raw", ""),
         "errors": int(data.get("errors", 0)),
+        # одноразовый токен удаления: иначе лог с личными данными не убрать с mclo.gs
+        "delete_token": str(data.get("token", "") or ""),
     }

@@ -409,7 +409,11 @@ def split_jvm_args(text):
 
 def build_jvm_arguments(cfg, ram_mb, java_major=17):
     """Формирует итоговый список JVM-аргументов из RAM + пресета + доп. параметров."""
-    ram = max(1024, int(ram_mb))
+    # ram_mb из config.json могли править руками ("4 GB") — не роняем запуск
+    try:
+        ram = max(1024, int(ram_mb))
+    except (TypeError, ValueError):
+        ram = 4096
     presets = all_presets(cfg)
     preset_name = cfg.get("jvm_preset", "G1GC")
     if preset_name not in presets:

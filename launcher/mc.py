@@ -46,12 +46,20 @@ def has_mangohud():
 
 
 def resolve_mc_server_target(server_host, server_port=25565, sync_host=""):
-    """Вычисляет реальный (host, port) Minecraft-сервера с учётом auto и доменов."""
+    """Вычисляет реальный (host, port) Minecraft-сервера с учётом auto, доменов и IPv6."""
     h = str(server_host or "").strip()
     p = int(server_port or 25565)
-    if ":" in h and not h.startswith("["):
+    if h.startswith("["):  # [::1]:25565 — скобочный IPv6 с портом
+        close = h.find("]")
+        if close != -1:
+            tail = h[close + 1:]
+            if tail.startswith(":") and tail[1:].isdigit() and 1 <= int(tail[1:]) <= 65535:
+                p = int(tail[1:])
+            h = h[1:close]  # без скобок: так ждёт и socket, и параметр запуска игры
+    elif ":" in h:
         hp, _, pp = h.rpartition(":")
-        if pp.isdigit() and 1 <= int(pp) <= 65535:
+        # bare IPv6 без порта (в host-части остались двоеточия) не разбираем как host:port
+        if pp.isdigit() and 1 <= int(pp) <= 65535 and ":" not in hp:
             h, p = hp.strip(), int(pp)
     sh = str(sync_host or "").strip()
     if h.lower() in ("", "auto", "127.0.0.1", "localhost", "0.0.0.0") and sh:
@@ -274,6 +282,10 @@ def ensure_version(mc_dir, mc_version, loader, on_frac=None, cfg=None, server_ja
             raise RuntimeError(
                 "NeoForge требует minecraft-launcher-lib >= 8.0 — обнови зависимости "
                 "(pip install -U minecraft-launcher-lib)")
+        elif loader not in ("none", ""):
+            # Честно падаем и на прочих неизвестных загрузчиках (optifine и т.п.),
+            # вместо молчаливой ваниллы, которая не запустит ни один мод.
+            raise RuntimeError(f"Неподдерживаемый загрузчик: {loader}")
         else:
             mll.install.install_minecraft_version(mc_version, str(mc_dir), callback=cb)
 
@@ -481,8 +493,8 @@ def monitor_launch(proc, log_path, timeout_sec=120, on_ready=None):
             try:
                 proc.kill()
                 proc.wait(timeout=2)
-            except OSError:
-                pass
+            except subprocess.SubprocessError:
+                pass  # TimeoutExpired не наследует OSError — не даем ему уйти из monitor_launch
         except OSError:
             pass
         try:

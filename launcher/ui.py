@@ -21,37 +21,11 @@ import jvm
 import mc
 import sync
 import themes
+from cli import parse_hostport  # единый валидатор адреса с CLI (IDN, IPv6, схема)
 
 log = logging.getLogger("botyaraMC.ui")
 DEFAULT_PORT = 25456
 GREETING_ROTATE_MS = 10 * 60 * 1000  # 10 минут
-
-
-def parse_hostport(text):
-    t = (text or "").strip().rstrip("/")
-    for prefix in ("http://", "https://"):
-        if t.startswith(prefix):
-            t = t[len(prefix):]
-    if not t or " " in t:
-        return None
-    host, port = t, DEFAULT_PORT
-    if ":" in t:
-        host, _, p = t.rpartition(":")
-        if not p.isdigit() or not 0 < int(p) < 65536:
-            return None
-        port = int(p)
-    if not host:
-        return None
-    if re.fullmatch(r"[0-9.]+", host):
-        parts = host.split(".")
-        if len(parts) != 4 or any(not x.isdigit() or not 0 <= int(x) <= 255 for x in parts):
-            return None
-        return host, port
-    if len(host) < 2 or not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*", host):
-        return None
-    if host.startswith("-") or host.endswith("-"):
-        return None
-    return host, port
 
 
 def _hex_to_rgb(h):
@@ -1020,17 +994,24 @@ class App(ctk.CTk):
         """Фоновая проверка манифеста и расчёт суммарного размера к скачиванию."""
         if self.playing:
             return
+        # F5-спам не должен плодить параллельные потоки с гонкой за self._last_manifest
+        inflight = getattr(self, "_refresh_inflight", False)
+        if inflight:
+            return
         if manual:
             self._set_status(self._tr("status_refreshing"))
+        self._refresh_inflight = True
 
         def work():
             cfg = self.cfg
             host, port = cfg.get("sync_host", ""), cfg.get("sync_port", DEFAULT_PORT)
             srv_id = cfg.get("active_server_id") or None
-            if not host:
-                return
             try:
-                mf = sync.fetch_manifest(host, port)
+                if not host:
+                    return
+                cached = cfgmod.load_cache(server_id=srv_id)
+                mf = sync.fetch_manifest(
+                    host, port, cached=cached, cached_etag=(cached or {}).get("_etag"))
                 if mf.get("server_name"):
                     if cfgmod.update_server_name(cfg, mf["server_name"], server_id=srv_id):
                         cfgmod.save(cfg)
@@ -1041,12 +1022,15 @@ class App(ctk.CTk):
                     mf, mc_dir,
                     is_host=cfg.get("is_host", False),
                     server_mods_dir=cfg.get("server_mods_dir", ""),
+                    cfg=cfg,
                 )
                 self.post(_apply_plan, mf, plan, True)
             except Exception:
                 cached = cfgmod.load_cache(server_id=srv_id)
                 self._last_manifest = cached
                 self.post(_apply_plan, cached, None, False)
+            finally:
+                self._refresh_inflight = False
 
         def _apply_plan(mf, plan, online):
             if self.playing:
@@ -1125,9 +1109,11 @@ class App(ctk.CTk):
             P(self._set_status, i18n.tr(lang, "status_connecting"))
             P(self._set_progress, 0.04)
             manifest = None
+            cached = cfgmod.load_cache(server_id=srv_id)
             if host:
                 try:
-                    manifest = sync.fetch_manifest(host, port)
+                    manifest = sync.fetch_manifest(
+                        host, port, cached=cached, cached_etag=(cached or {}).get("_etag"))
                 except Exception:
                     log.warning("sync-сервер недоступен по %s:%s, ищем заново", host, port)
             if manifest is None:
@@ -1137,7 +1123,8 @@ class App(ctk.CTk):
                 if matched:
                     fh, fp, fname, entry = matched
                     try:
-                        manifest = sync.fetch_manifest(fh, fp)
+                        manifest = sync.fetch_manifest(
+                            fh, fp, cached=cached, cached_etag=(cached or {}).get("_etag"))
                         host, port = fh, fp
                         srv_id = entry["id"]
                         cfgmod.save(cfg)
@@ -1250,7 +1237,8 @@ class App(ctk.CTk):
         try:
             # Change button text/state first, then paint the full button using
             # the public CTk options (disabled buttons still keep their accent).
-            self.play_btn.configure(text=self._tr("play_btn_running"), state="disabled")
+            self._play_btn_text = self._tr("play_btn_running")  # чтобы пересборка вида не сбросила надпись
+            self.play_btn.configure(text=self._play_btn_text, state="disabled")
             self._play_hover_t = 1.0
             self._paint_play_button_color()
             # Hide progress bar
@@ -1294,7 +1282,8 @@ class App(ctk.CTk):
     def _open_folders_dialog(self):
         mc_dir = mc.find_minecraft_dir(self.cfg.get("mc_dir", ""))
         client_folder = (self._last_manifest or {}).get("client_folder", "")
-        game_dir = cfgmod.resolve_game_dir(mc_dir, client_folder)
+        game_dir = cfgmod.resolve_game_dir(
+            mc_dir, client_folder, cfg=self.cfg, manifest=self._last_manifest)
 
         has_host = bool(self.cfg.get("is_host") and self.cfg.get("server_mods_dir"))
         dlg_h = 560 if has_host else 520
@@ -1483,7 +1472,12 @@ class App(ctk.CTk):
         self.T(txt, fg_color="bg", text_color="text", border_color="border",
                scrollbar_button_color="surface_hover", scrollbar_button_hover_color="accent")
         txt.pack(fill="both", expand=True, padx=20, pady=(4, 8))
-        txt.insert("1.0", full_log or self._tr("log_empty"))
+        # В текстбокс показываем только хвост лога: многометровый лог вставляется слишком
+        # долго и замораживает окно. Copy и Share при этом получают ПОЛНЫЙ текст.
+        shown_log = full_log or ""
+        if len(shown_log) > 300_000:
+            shown_log = "… " + self._tr("log_tail_notice") + "\n" + shown_log[-300_000:]
+        txt.insert("1.0", shown_log or self._tr("log_empty"))
         txt.see("end")
         txt.configure(state="disabled")
 
@@ -2045,7 +2039,23 @@ class App(ctk.CTk):
         java_info_lbl = self.label(g, "", 12, color="subtext", wraplength=540)
         java_info_lbl.grid(row=16, column=1, columnspan=2, sticky="w")
 
-        def check_java_entry(*_a):
+        java_probe_cache = {}  # raw_path -> info | None: результат последней проверки
+        java_probe_state = {"seq": 0, "job": None}
+
+        def _show_probe_result(raw_p, info):
+            try:
+                if not java_info_lbl.winfo_exists() or e_java.get().strip() != raw_p:
+                    return  # пользователь уже успел допечатать путь
+            except Exception:
+                return
+            if info:
+                self.msg(java_info_lbl, self._tr("java_probe_ok", label=info["label"]), "success")
+            else:
+                self.msg(java_info_lbl, self._tr("java_probe_bad"), "danger")
+
+        def check_java_entry(*_a, sync_probe=False):
+            """Проверка пути Java. Проба «java -version» — это subprocess до 4 сек,
+            поэтому при наборе текста она уходит в фон (с дебаунсом), а не в mainloop."""
             if om_java_mode.get() != lbl_java_manual:
                 self.msg(java_info_lbl, self._tr("java_auto_hint"), "subtext")
                 return True
@@ -2053,12 +2063,43 @@ class App(ctk.CTk):
             if not raw_p:
                 self.msg(java_info_lbl, self._tr("java_manual_empty"), "subtext")
                 return False
-            info = jvm.probe_java(raw_p)
-            if info:
-                self.msg(java_info_lbl, self._tr("java_probe_ok", label=info["label"]), "success")
-                return True
-            self.msg(java_info_lbl, self._tr("java_probe_bad"), "danger")
-            return False
+            if sync_probe:
+                info = jvm.probe_java(raw_p)  # для только что найденного пути кэш уже горячий
+                java_probe_cache[raw_p] = info
+                _show_probe_result(raw_p, info)
+                return bool(info)
+            if raw_p in java_probe_cache:
+                _show_probe_result(raw_p, java_probe_cache[raw_p])
+                return bool(java_probe_cache[raw_p])
+            java_probe_state["seq"] += 1
+            seq = java_probe_state["seq"]
+            if java_probe_state["job"] is not None:
+                try:
+                    self.after_cancel(java_probe_state["job"])
+                except Exception:
+                    pass
+            java_probe_state["job"] = self.after(500, lambda: _async_java_probe(raw_p, seq))
+            return True
+
+        def _async_java_probe(raw_p, seq):
+            java_probe_state["job"] = None
+
+            def work():
+                info = jvm.probe_java(raw_p)
+                self.post(_java_probe_done, raw_p, seq, info)
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def _java_probe_done(raw_p, seq, info):
+            if seq != java_probe_state["seq"] or not java_info_lbl.winfo_exists():
+                return
+            java_probe_cache[raw_p] = info
+            _show_probe_result(raw_p, info)
+            # Если заведомо битый путь успел сохраниться — возвращаем авто-режим
+            if info is None and om_java_mode.get() == lbl_java_manual \
+                    and e_java.get().strip() == raw_p and c.get("java_mode") == "manual":
+                c["java_mode"] = "auto"
+                cfgmod.save(c)
 
         def on_pick_detected(choice):
             path = detected_map.get(choice)
@@ -2067,7 +2108,7 @@ class App(ctk.CTk):
                 toggle_java_mode(save_after=False)
                 e_java.delete(0, "end")
                 e_java.insert(0, path)
-                check_java_entry()
+                check_java_entry(sync_probe=True)
                 autosave_now()
 
         om_detected.configure(command=on_pick_detected)
@@ -2447,8 +2488,12 @@ class App(ctk.CTk):
                     # Use update_active_server_address to preserve server ID
                     cfgmod.update_active_server_address(c, parsed[0], parsed[1])
                     cfgmod.save(c)
-                    e_host.delete(0, "end")
-                    e_host.insert(0, self._addr_text(parsed[0], parsed[1]))
+                    normalized = self._addr_text(parsed[0], parsed[1])
+                    if e_host.get().strip() != normalized:
+                        # Перезаписываем только реально нормализованный ввод,
+                        # чтобы курсор не прыгал в конец на каждом нажатии
+                        e_host.delete(0, "end")
+                        e_host.insert(0, normalized)
                     rebuild_servers_dropdown()
                 else:
                     first_error = first_error or self._tr("st_err_addr")
@@ -2477,26 +2522,35 @@ class App(ctk.CTk):
                 if srv_dir:
                     c["server_mods_dir"] = srv_dir
 
-            # 5. RAM
+            # 5. RAM (ручное значение тоже не выше системного потолка слайдера)
             auto_ram_val = bool(sw_autoram.get())
             c["auto_ram"] = auto_ram_val
             if not auto_ram_val:
                 try:
-                    c["ram_mb"] = max(1024, int(e_ram.get().strip()))
+                    ram_raw = max(1024, int(e_ram.get().strip()))
+                    ram_cap = max_ram
+                    if ram_raw > ram_cap:
+                        ram_raw = ram_cap
+                        e_ram.delete(0, "end")
+                        e_ram.insert(0, str(ram_cap))
+                    c["ram_mb"] = ram_raw
                 except ValueError:
                     first_error = first_error or self._tr("st_err_ram")
 
-            # 6. Java
+            # 6. Java (проба процесса — в фоне; здесь только кэш последней проверки)
             java_mode_val = "manual" if om_java_mode.get() == lbl_java_manual else "auto"
             if java_mode_val == "auto":
                 c["java_mode"] = "auto"
             else:
                 jp = e_java.get().strip()
-                if jp and jvm.probe_java(jp):
+                if not jp:
+                    first_error = first_error or self._tr("st_err_java")
+                else:
+                    # Сохраняем путь оптимистично: живую проверку запускает
+                    # check_java_entry, при неудаче он вернёт авто-режим.
                     c["java_mode"] = "manual"
                     c["java_path"] = jp
-                else:
-                    first_error = first_error or self._tr("st_err_java")
+                    check_java_entry()
 
             # 7. JVM-пресеты и флаги
             c["jvm_preset"] = preset_var.get()

@@ -904,3 +904,320 @@ def test_regression_hide_list_with_comma_roundtrip():
     assert C.parse_hide_list("a.jar, b.jar") == ["a.jar", "b.jar"]  # старый формат
     out = C.render_config({"hide_mods_list": ["foo,bar.jar"], "language": "en"}, lang="en")
     assert 'hide_mods_list = ["foo,bar.jar"]' in out
+
+
+# ------------------------------------------------------------------
+# 12: HTTP/1.1 keep-alive, ETag/304, суффиксные Range и If-Range
+# ------------------------------------------------------------------
+def test_server_http11_etag_suffix_range_and_keepalive(isolated_env):
+    import http.client
+
+    port = isolated_env["port"]
+    mods_dir = isolated_env["mods_dir"]
+    data = b"A" * 100_000 + b"B" * 50_000
+    (mods_dir / "range.jar").write_bytes(data)
+
+    # Суффиксный Range bytes=-N (последние N байт, RFC 7233)
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/mods/range.jar", headers={"Range": "bytes=-5000"})
+    with urllib.request.urlopen(req) as r:
+        assert r.status == 206
+        assert r.read() == data[-5000:]
+
+    # bytes=-0 неудовлетворим -> 416
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        urllib.request.urlopen(urllib.request.Request(
+            f"http://127.0.0.1:{port}/mods/range.jar", headers={"Range": "bytes=-0"}))
+    assert ei.value.code == 416
+
+    # ETag + If-None-Match -> лёгкий 304 без тела
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/mods/range.jar") as r1:
+        etag = r1.headers.get("ETag")
+        r1.read()
+    assert etag
+    with pytest.raises(urllib.error.HTTPError) as ei2:
+        urllib.request.urlopen(urllib.request.Request(
+            f"http://127.0.0.1:{port}/mods/range.jar", headers={"If-None-Match": etag}))
+    assert ei2.value.code == 304
+
+    # If-Range с чужим ETag: файл менялся -> безопасная полная отдача 200
+    req3 = urllib.request.Request(
+        f"http://127.0.0.1:{port}/mods/range.jar",
+        headers={"Range": "bytes=100000-", "If-Range": '"stale-etag"'})
+    with urllib.request.urlopen(req3) as r3:
+        assert r3.status == 200
+        assert r3.read() == data
+
+    # Мульти-рейндж не поддерживается и не должен давать 416: игнорируем -> 200
+    req4 = urllib.request.Request(
+        f"http://127.0.0.1:{port}/mods/range.jar", headers={"Range": "bytes=0-1,5-9"})
+    with urllib.request.urlopen(req4) as r4:
+        assert r4.status == 200
+        assert r4.read() == data
+
+    # keep-alive: два запроса через одно TCP-соединение (HTTP/1.1)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    conn.request("GET", "/ping")
+    resp1 = conn.getresponse()
+    assert resp1.status == 200 and resp1.read()
+    conn.request("GET", "/ping")
+    resp2 = conn.getresponse()
+    assert resp2.status == 200 and resp2.read()
+    conn.close()
+
+    # /manifest тоже кэшируется по ETag
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/manifest") as rm:
+        metag = rm.headers.get("ETag")
+        rm.read()
+    assert metag
+    with pytest.raises(urllib.error.HTTPError) as ei3:
+        urllib.request.urlopen(urllib.request.Request(
+            f"http://127.0.0.1:{port}/manifest", headers={"If-None-Match": metag}))
+    assert ei3.value.code == 304
+
+
+# ------------------------------------------------------------------
+# 13: Валидация манифеста, кэш манифестов + кросс-запусковый кэш SHA-256
+# ------------------------------------------------------------------
+_STUB = {"body": {}}
+
+
+def test_manifest_validation_cache_and_hash_persistence(isolated_env):
+    # save_cache/load_cache roundtrip с ETag (офлайн-режим CLI зависит от стабильного id)
+    mf = {"app": "botyaraMC", "server_name": "S", "mc_version": "1.20.1", "loader": "fabric",
+          "client_folder": "", "delete_user_mods": False,
+          "server": {"host": "127.0.0.1", "port": 25565, "auto_join": True},
+          "mods": [], "resourcepacks": [], "background": None, "java_version": None,
+          "mods_hidden": False, "_etag": '"abc123"'}
+    cfgmod.save_cache(mf, server_id="srvA")
+    loaded = cfgmod.load_cache(server_id="srvA")
+    assert loaded and loaded["mc_version"] == "1.20.1" and loaded["_etag"] == '"abc123"'
+    assert cfgmod.load_cache(server_id="srvB") is None  # чужой кэш не подтекает
+
+    # Заглушка сервера для валидации fetch_manifest
+    class StubHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            body = json.dumps(_STUB["body"]).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    httpd2 = ThreadingHTTPServer(("127.0.0.1", 0), StubHandler)
+    stub_port = httpd2.server_address[1]
+    t2 = threading.Thread(target=httpd2.serve_forever, daemon=True)
+    t2.start()
+    try:
+        # Манифест без mc_version отвергается (раньше падал KeyError дальше по коду)
+        _STUB["body"] = {"app": "botyaraMC", "loader": "fabric", "mods": []}
+        with pytest.raises(ValueError):
+            sync.fetch_manifest("127.0.0.1", stub_port)
+
+        # Одна кривая запись не убивает весь список; битый порт -> дефолт
+        _STUB["body"] = {
+            "app": "botyaraMC", "mc_version": "1.20.1", "loader": "fabric",
+            "mods": ["oops", 42,
+                     {"name": "good.jar", "sha256": "A" * 64, "size": 5}],
+            "server": {"port": "bad"},
+        }
+        mf2 = sync.fetch_manifest("127.0.0.1", stub_port)
+        assert [m["name"] for m in mf2["mods"]] == ["good.jar"]
+        assert mf2["server"]["port"] == 25565
+    finally:
+        httpd2.shutdown()
+
+    # Кросс-запусковый кэш SHA-256: файл не пересчитывается после flush + reload
+    hdir = isolated_env["mc_dir"] / "hcache"
+    hdir.mkdir(parents=True, exist_ok=True)
+    hp = hdir / "mod.jar"
+    hp.write_bytes(b"CACHE_ME_BYTES")
+    sha1 = sync.file_sha256(hp)
+    sync.flush_hash_cache()
+    assert (isolated_env["cfg_dir"] / "hash_cache.json").is_file()
+    sync._hash_cache.clear()
+    sync._disk_hash_cache = None  # имитация нового запуска процесса
+    assert sync.file_sha256(hp) == sha1
+    hp.write_bytes(b"CHANGED CONTENT")
+    assert sync.file_sha256(hp) != sha1
+    sync.flush_hash_cache()
+
+
+# ------------------------------------------------------------------
+# 14: Параллельные загрузки + паритет защиты пользовательских модов
+# ------------------------------------------------------------------
+def test_parallel_downloads_and_user_mod_parity(isolated_env):
+    port = isolated_env["port"]
+    mods_dir = isolated_env["mods_dir"]
+    mc_dir = isolated_env["mc_dir"]
+    names = [f"pmod{i}.jar" for i in range(8)]
+    for i, n in enumerate(names):
+        (mods_dir / n).write_bytes(bytes([65 + i]) * (10_000 + i))
+
+    mf = sync.fetch_manifest("127.0.0.1", port)
+    assert len(mf["mods"]) == 8
+    client_mods = mc_dir / "mods"
+    client_mods.mkdir()
+    got = [0]
+    ok = sync.sync("127.0.0.1", port, mf["mods"], [client_mods],
+                   on_bytes=lambda n: got.__setitem__(0, got[0] + n))
+    assert ok is True
+    for i, n in enumerate(names):
+        assert (client_mods / n).read_bytes() == bytes([65 + i]) * (10_000 + i)
+    assert got[0] == sum(10_000 + i for i in range(8))  # по сети ушло ровно столько байт
+
+    # Файл игрока jei.jar (добавленный ПОСЛЕ первого синка) уезжает в old-mods/
+    # вместо молчаливой перезаписи — паритет с ресурспаками.
+    (client_mods / "jei.jar").write_bytes(b"USER_JEI_V1")
+    (mods_dir / "jei.jar").write_bytes(b"SERVER_JEI_V1")
+    mf3 = sync.fetch_manifest("127.0.0.1", port)
+    ok3 = sync.sync("127.0.0.1", port, mf3["mods"], [client_mods])
+    assert ok3 is True
+    assert (client_mods / "jei.jar").read_bytes() == b"SERVER_JEI_V1"
+    moved = list((client_mods / "old-mods").glob("jei*.jar"))
+    assert any(m.read_bytes() == b"USER_JEI_V1" for m in moved)
+
+
+# ------------------------------------------------------------------
+# 15: IPv6 в parse_hostport / resolve_mc_server_target + sanitize_client_folder
+# ------------------------------------------------------------------
+def test_ipv6_parsing_and_folder_sanitize():
+    import cli
+
+    assert cli.parse_hostport("[::1]:25456") == ("[::1]", 25456)
+    assert cli.parse_hostport("[2001:db8::1]") == ("[2001:db8::1]", 25456)
+    assert cli.parse_hostport("26::1") is None          # bare IPv6 больше не склеивается в host:port
+    assert cli.parse_hostport("host:abc") is None
+    assert cli.parse_hostport("26.12.34.56:1234") == ("26.12.34.56", 1234)
+    assert cli.parse_hostport("play.example.com") == ("play.example.com", 25456)
+
+    h, p = mc.resolve_mc_server_target("[::1]:25565", 1)
+    assert (h, p) == ("::1", 25565)
+    h2, p2 = mc.resolve_mc_server_target("26.12.34.56:30000", 1)
+    assert (h2, p2) == ("26.12.34.56", 30000)
+
+    # Windows-зарезервированные имена и хвостовые точки не проходят санитизацию
+    assert cfgmod.sanitize_client_folder("con") == ""
+    assert cfgmod.sanitize_client_folder("nul") == ""
+    assert cfgmod.sanitize_client_folder("com1") == ""
+    assert cfgmod.sanitize_client_folder("pack.") == ""
+    assert cfgmod.sanitize_client_folder("Fabric-1.16") == "Fabric-1.16"
+
+
+# ------------------------------------------------------------------
+# 16: Валидация config.txt сервера, кэш load() и права на соль
+# ------------------------------------------------------------------
+def test_server_config_validation_and_cache(isolated_env):
+    cfg_file = isolated_env["cfg_file"]
+    cfg_file.write_text(
+        "http_port = 0\ndiscovery_port = 70000\n"
+        "minecraft_server = 'not a (valid) addr!!'\nrate_limit_per_min = -5\n",
+        encoding="utf-8",
+    )
+    cfg = C.load()
+    assert cfg["http_port"] == 25456      # 0/70000 -> дефолт вместо случайного порта
+    assert cfg["discovery_port"] == 25457
+    assert cfg["minecraft_server"] == "auto"  # мусор не уезжает клиентам
+    assert cfg["rate_limit_per_min"] == 300
+
+    # load() возвращает копию: мутации вызывающего не портят кэш
+    cfg["server_name"] = "MUTATED"
+    cfg2 = C.load()
+    assert cfg2["server_name"] != "MUTATED"
+
+    # Соль cloaking приватная (0600) и стабильна между вызовами
+    C._salt_cache.clear()
+    s1 = C.get_hide_salt()
+    s2 = C.get_hide_salt()
+    assert s1 == s2 and len(s1) >= 16
+    if not sys.platform.startswith("win"):
+        assert (C.SALT_FILE.stat().st_mode & 0o777) == 0o600
+
+
+# ------------------------------------------------------------------
+# 17: Параллельные записи config.json + robustness i18n / crash
+# ------------------------------------------------------------------
+def test_concurrent_config_save_and_i18n_robustness(isolated_env):
+    import i18n
+
+    cfg = cfgmod.load()
+    cfg["nickname"] = "starter"
+    cfgmod.save(cfg)
+
+    errs = []
+
+    def writer(i):
+        try:
+            c2 = cfgmod.load()
+            c2["nickname"] = f"user{i}"
+            cfgmod.save(c2)
+        except Exception as e:  # noqa: BLE001
+            errs.append(e)
+
+    ts = [threading.Thread(target=writer, args=(i,)) for i in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert errs == []
+    final = cfgmod.load()
+    assert final["nickname"].startswith("user")  # config.json не порвался
+
+    # tr(): битый плейсхолдер не роняет построение UI
+    assert i18n.tr("en", "no_such_key_xyz") == "no_such_key_xyz"
+    assert i18n.tr("en", "log_lines", wrong_kwarg=1) == "{n} lines"
+    assert i18n.tr("en", "log_lines", n=7) == "7 lines"
+
+    # Приветствие без ника не оставляет хвост перед пунктуацией
+    assert i18n.format_greeting_template("Morning {name} is the best {name}!") == "Morning is the best!"
+    assert sync.format_size(45 * 1024 * 1024, lang="en") == "45 MB"
+
+
+def test_crash_privacy_and_mclogs_json_robustness(monkeypatch):
+    # Пути без хвостового разделителя и не-C: диски тоже скрабятся
+    scrubbed = crash.sanitize_and_truncate_for_mclogs(
+        "user.home=/home/john\nCannot access C:\\Users\\John\npath=D:\\Users\\Ann\\x.txt")
+    assert "/home/john" not in scrubbed
+    assert "/home/********" in scrubbed
+    assert "Users\\John" not in scrubbed and "Users\\Ann" not in scrubbed
+
+    # 200 с HTML (кэптивный портал) -> внятный RuntimeError, а не сырой JSONDecodeError
+    class FakeHtmlResp:
+        headers = {}
+
+        def read(self):
+            return b"<html>Sign in to wifi</html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(crash.urllib.request, "urlopen", lambda req, timeout=0: FakeHtmlResp())
+    with pytest.raises(RuntimeError, match="non-JSON|не-JSON"):
+        crash.upload_to_mclogs("log text", lang="en")
+
+    # Токен удаления сохраняется: без него лог с личными данными не убрать с mclo.gs
+    class FakeJsonResp(FakeHtmlResp):
+        def read(self):
+            return json.dumps({
+                "success": True, "url": "https://mclo.gs/abc", "id": "abc",
+                "raw": "https://api.mclo.gs/1/raw/abc", "errors": 0, "token": "TOK123",
+            }).encode("utf-8")
+
+    monkeypatch.setattr(crash.urllib.request, "urlopen", lambda req, timeout=0: FakeJsonResp())
+    res = crash.upload_to_mclogs("log text", lang="en")
+    assert res["url"] == "https://mclo.gs/abc"
+    assert res["delete_token"] == "TOK123"
+
+
+def test_unsupported_loader_fails_loudly(isolated_env):
+    # optifine/мусорные загрузчики честно падают, а не ставят молча ваниллу
+    with pytest.raises(RuntimeError):
+        mc.ensure_version(isolated_env["mc_dir"], "1.20.1", "optifine")

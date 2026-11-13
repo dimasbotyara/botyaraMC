@@ -1,10 +1,12 @@
 """Синхронизация модов, ресурспаков и фона: old-mods, кэш mods/botyaraMC, botyaramc.json, Range-докачка."""
+import concurrent.futures
 import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -17,9 +19,14 @@ import i18n
 log = logging.getLogger("botyaraMC.sync")
 TIMEOUT = 12
 MAX_RETRIES = 4
+DOWNLOAD_WORKERS = 6  # параллельные загрузки модов (сервер многопоточный, Range-safe)
+MANIFEST_MAX_BYTES = 1_048_576  # защита от OOM на мусорном/злонамеренном ответе
 MARKER_FILE = cfgmod.MARKER_FILENAME  # "botyaramc.json"
 
 _hash_cache = {}  # (resolved_str, mtime_ns, size) -> sha256
+_hash_lock = threading.Lock()
+_disk_hash_cache = None  # {f"{resolved}:{mtime_ns}:{size}": sha} — переживает перезапуск лаунчера
+_disk_hash_dirty = False
 
 
 def _safe_name(name, ext=".jar"):
@@ -62,45 +69,95 @@ def format_size(num_bytes, lang="ru"):
     return f"{gb:.2f} {u_gb}".replace(".00 ", " ")
 
 
-def fetch_manifest(host, port):
+def fetch_manifest(host, port, cached=None, cached_etag=None):
+    """
+    Скачивает /manifest и строго валидирует.
+    cached/cached_etag (из манифест-кэша сервера) позволяют получить лёгкий 304,
+    если сервер ничего не изменил, — тогда мгновенно возвращается сохранённый манифест.
+    """
     url = _base(host, port) + "/manifest"
-    req = urllib.request.Request(url, headers={"User-Agent": "botyaraMC"})
-    for attempt in range(2):
+    headers = {"User-Agent": "botyaraMC"}
+    if cached_etag:
+        headers["If-None-Match"] = cached_etag
+    req = urllib.request.Request(url, headers=headers)
+    data, etag = None, None
+    for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-                data = json.loads(r.read().decode("utf-8"))
+                raw = r.read(MANIFEST_MAX_BYTES + 1)
+                if len(raw) > MANIFEST_MAX_BYTES:
+                    raise ValueError("manifest is too large")
+                data = json.loads(raw.decode("utf-8"))
+                etag = r.headers.get("ETag")
             break
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt == 0:
+            if e.code == 304 and isinstance(cached, dict) and "mc_version" in cached:
+                cached = dict(cached)
+                cached["_etag"] = cached_etag
+                return cached
+            if e.code == 429 and attempt < 2:
                 wait = min(8.0, float(e.headers.get("Retry-After") or 2.0))
                 time.sleep(wait)
                 continue
             raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            # не путаем обрыв сети с настоящими HTTP-ошибками: одна осечка не повод ронять запуск
+            if attempt < 2 and not isinstance(e, urllib.error.HTTPError):
+                time.sleep(0.8 * (attempt + 1))
+                continue
+            raise
 
+    if not isinstance(data, dict):
+        raise ValueError("manifest is not a JSON object")
     if data.get("app") != "botyaraMC":
         raise ValueError("not a botyaraMC server")
+    if not str(data.get("mc_version") or "").strip():
+        raise ValueError("manifest has no mc_version")  # без версии игру не установить
+    data["loader"] = str(data.get("loader") or "none").strip().lower()
 
     data["server_name"] = str(data.get("server_name") or "").strip()[:64]
     data["client_folder"] = cfgmod.sanitize_client_folder(data.get("client_folder", ""))
     data["delete_user_mods"] = bool(data.get("delete_user_mods", False))
 
     srv = data.get("server") if isinstance(data.get("server"), dict) else {}
+    try:
+        srv_port = int(srv.get("port") or 25565)
+    except (TypeError, ValueError):
+        srv_port = 25565
     data["server"] = {
         "host": str(srv.get("host") or "").strip(),
-        "port": int(srv.get("port") or 25565),
+        "port": srv_port,
         "auto_join": bool(srv.get("auto_join", True)),
     }
 
-    data["mods"] = [
-        {"name": m["name"], "sha256": str(m["sha256"]).lower(), "size": max(0, int(m.get("size", 0)))}
-        for m in data.get("mods", [])
-        if _safe_name(m.get("name"), ".jar") and m.get("sha256")
-    ]
-    data["resourcepacks"] = [
-        {"name": rp["name"], "sha256": str(rp["sha256"]).lower(), "size": max(0, int(rp.get("size", 0)))}
-        for rp in data.get("resourcepacks", [])
-        if _safe_name(rp.get("name"), ".zip") and rp.get("sha256")
-    ]
+    raw_mods = data.get("mods") or []
+    data["mods"] = []
+    for m in raw_mods:
+        if not isinstance(m, dict):
+            continue  # одна кривая запись не должна ломать весь манифест
+        try:
+            if _safe_name(m.get("name"), ".jar") and m.get("sha256"):
+                data["mods"].append({
+                    "name": m["name"],
+                    "sha256": str(m["sha256"]).lower(),
+                    "size": max(0, int(m.get("size", 0))),
+                })
+        except (TypeError, ValueError):
+            continue
+    raw_rps = data.get("resourcepacks") or []
+    data["resourcepacks"] = []
+    for rp in raw_rps:
+        if not isinstance(rp, dict):
+            continue
+        try:
+            if _safe_name(rp.get("name"), ".zip") and rp.get("sha256"):
+                data["resourcepacks"].append({
+                    "name": rp["name"],
+                    "sha256": str(rp["sha256"]).lower(),
+                    "size": max(0, int(rp.get("size", 0))),
+                })
+        except (TypeError, ValueError):
+            continue
 
     raw_bg = data.get("background")
     if isinstance(raw_bg, dict) and _safe_bg_name(raw_bg.get("name")) and raw_bg.get("sha256"):
@@ -115,18 +172,67 @@ def fetch_manifest(host, port):
     jv = data.get("java_version")
     data["java_version"] = int(jv) if isinstance(jv, int) or (isinstance(jv, str) and jv.isdigit()) else None
     data["mods_hidden"] = bool(data.get("mods_hidden", False))
+    data["_etag"] = etag or ""
     return data
 
 
+def _disk_cache_path():
+    return cfgmod.config_dir() / "hash_cache.json"
+
+
+def _load_disk_hash_cache():
+    global _disk_hash_cache
+    if _disk_hash_cache is None:
+        try:
+            data = json.loads(_disk_cache_path().read_text("utf-8"))
+            _disk_hash_cache = dict(data) if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            _disk_hash_cache = {}
+    return _disk_hash_cache
+
+
+def flush_hash_cache():
+    """Сохраняет накопленные SHA-256 на диск (key = path:mtime:size), чтобы
+    следующий запуск не перечитывал и не пересчитывал всю библиотеку модов."""
+    global _disk_hash_dirty
+    with _hash_lock:
+        if not _disk_hash_dirty or _disk_hash_cache is None:
+            return
+        data = dict(_disk_hash_cache)
+        _disk_hash_dirty = False
+    if len(data) > 16384:  # держим файл компактным: больше записей не нужно
+        data = dict(list(data.items())[-8192:])
+    try:
+        p = _disk_cache_path()
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(data), "utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        log.debug("не удалось сохранить hash_cache.json", exc_info=True)
+
+
 def file_sha256(path):
+    global _disk_hash_dirty
     p = Path(path)
     try:
         st = p.stat()
         key = (str(p.resolve()), st.st_mtime_ns, st.st_size)
-        if key in _hash_cache:
-            return _hash_cache[key]
+        cache_key = f"{key[0]}:{key[1]}:{key[2]}"
     except OSError:
-        key = None
+        key, cache_key = None, None
+
+    if key is not None:
+        with _hash_lock:
+            hit = _hash_cache.get(key)
+        if hit:
+            return hit
+        disk = _load_disk_hash_cache().get(cache_key)
+        if disk:
+            with _hash_lock:
+                if len(_hash_cache) > 4096:
+                    _hash_cache.clear()
+                _hash_cache[key] = disk
+            return disk
 
     h = hashlib.sha256()
     with open(p, "rb") as f:
@@ -134,9 +240,17 @@ def file_sha256(path):
             h.update(chunk)
     digest = h.hexdigest()
     if key is not None:
-        if len(_hash_cache) > 4096:
-            _hash_cache.clear()
-        _hash_cache[key] = digest
+        with _hash_lock:
+            if len(_hash_cache) > 4096:
+                _hash_cache.clear()
+            _hash_cache[key] = digest
+        disk = _load_disk_hash_cache()
+        if disk.get(cache_key) != digest:
+            if len(disk) > 16384:
+                disk.clear()
+            disk[cache_key] = digest
+            with _hash_lock:
+                _disk_hash_dirty = True
     return digest
 
 
@@ -336,18 +450,29 @@ def _stash_mod(src, stash_dir):
     stash_dir = Path(stash_dir)
     stash_dir.mkdir(parents=True, exist_ok=True)
     cand = stash_dir / src.name
-    if cand.is_file():
+    try:
+        src_sha = file_sha256(src)
+    except OSError:
+        src_sha = None
+    if src_sha and cand.is_file():
         try:
-            src_sha = file_sha256(src)
             if file_sha256(cand) == src_sha:
                 src.unlink()
                 return cand
-            cand = stash_dir / f"{src.stem}_{src_sha[:8]}{src.suffix}"
-            if cand.is_file():
+            # имя совпало, а содержимое другое: сначала ищем версию с этим же хэшем,
+            # и только убедившись, что её нет — кладём под уникальным именем
+            alt = stash_dir / f"{src.stem}_{src_sha[:8]}{src.suffix}"
+            if alt.is_file() and file_sha256(alt) == src_sha:
                 src.unlink()
-                return cand
+                return alt
+            return _move_unique(
+                src, stash_dir,
+                preferred_name=f"{src.stem}_{src_sha[:8]}_{int(time.time())}{src.suffix}",
+            )
         except OSError:
             pass
+    if cand.is_file():
+        return _move_unique(src, stash_dir)  # не молча перезаписываем существующий файл стэша
     shutil.move(str(src), str(cand))
     return cand
 
@@ -418,7 +543,11 @@ def plan_sync(manifest, mc_dir, is_host=False, server_mods_dir="", cfg=None):
         in_place_all = True
         for t in mod_targets:
             dst = t / name
-            if not (dst.is_file() and file_sha256(dst) == sha):
+            try:
+                ok = dst.is_file() and file_sha256(dst) == sha
+            except OSError:
+                ok = False  # антивирус залочил файл / нет прав — считаем, что файла нет
+            if not ok:
                 in_place_all = False
                 break
         if in_place_all:
@@ -498,10 +627,20 @@ def _download_resumable(url, expected_sha, expected_size, dst, on_bytes=None):
                 status = getattr(resp, "status", 200)
                 h = hashlib.sha256()
                 if status == 206 and resume_from > 0 and tmp.is_file():
-                    with open(tmp, "rb") as rf:
-                        for chunk in iter(lambda: rf.read(1 << 20), b""):
-                            h.update(chunk)
-                    mode = "ab"
+                    # Сервер обязан подтвердить точку возобновления в Content-Range.
+                    # Прокси, проигнорировавший Range, но ответивший 206, без этой
+                    # проверки испортил бы поток склейкой с середины.
+                    cr = resp.headers.get("Content-Range") or ""
+                    m = re.match(r"^bytes\s+(\d+)-\d+/", cr)
+                    if m and int(m.group(1)) == resume_from:
+                        with open(tmp, "rb") as rf:
+                            for chunk in iter(lambda: rf.read(1 << 20), b""):
+                                h.update(chunk)
+                        mode = "ab"
+                    else:
+                        # Сервер не подтвердил офсет: начинаем заново, чтобы не собрать мусор
+                        resume_from = 0
+                        mode = "wb"
                 else:
                     resume_from = 0
                     mode = "wb"
@@ -528,7 +667,12 @@ def _download_resumable(url, expected_sha, expected_size, dst, on_bytes=None):
                 raise OSError(f"stream interrupted ({cur_size}/{expected_size} bytes)")
 
             if h.hexdigest() != expected_sha:
+                # Одна попытка заново (могли поймать обновление файла на сервере по дороге)
                 _cleanup_part(dst)
+                if attempt + 1 < MAX_RETRIES:
+                    last_err = ValueError(f"SHA-256 mismatch: {dst.name}")
+                    time.sleep(0.6)
+                    continue
                 raise ValueError(f"SHA-256 mismatch: {dst.name}")
             return tmp
 
@@ -664,15 +808,27 @@ def sync(host, port, mods, targets, on_progress=None, on_bytes=None,
                 log.exception("не удалось убрать неактуальный мод %s", name)
                 keep.add(name)
 
-        # 3. Устанавливаем / достаём из запаса / докачиваем нужные моды текущего сервера
+        # 3. Устанавливаем / достаём из запаса / докачиваем нужные моды текущего сервера.
+        # Локальные проверки и восстановления идут последовательно, сеть — пулом потоков.
+        downloads = []
         for name, m in wanted.items():
             dst = target / name
             sha = m["sha256"]
-            size = int(m.get("size", 0))
             try:
                 if dst.is_file() and file_sha256(dst) == sha:
                     good.setdefault(sha, dst)
                     _cleanup_part(dst)
+                    keep.add(name)
+                elif dst.is_file() and is_client and name not in managed:
+                    # Файл игрока с тем же именем, что у серверного мода: как и ресурспаки,
+                    # бережно убираем его в old-mods/ вместо молчаливой перезаписи.
+                    old_dir = target / "old-mods"
+                    try:
+                        _move_unique(dst, old_dir)
+                        log.info("пользовательский мод %s -> %s (конфликт имён)", name, old_dir)
+                    except OSError:
+                        log.exception("не удалось сохранить пользовательский мод %s", name)
+                    downloads.append((name, m))
                 elif sha in good and good[sha].is_file() and file_sha256(good[sha]) == sha:
                     src_cached = good[sha]
                     if is_client and src_cached.parent.resolve() == stash_dir.resolve():
@@ -683,20 +839,50 @@ def sync(host, port, mods, targets, on_progress=None, on_bytes=None,
                         os.replace(tmp, dst)
                     _cleanup_part(dst)
                     good[sha] = dst
+                    keep.add(name)
                     log.info("восстановлен локально по SHA-256 -> %s", dst)
                 else:
-                    url = f"{_base(host, port)}/mods/{urllib.parse.quote(name)}"
-                    tmp = _download_resumable(url, sha, size, dst, on_bytes=on_bytes)
-                    os.replace(tmp, dst)
-                    _cleanup_part(dst)
-                    good[sha] = dst
-                    log.info("скачан мод %s -> %s", name, target)
+                    downloads.append((name, m))
             except Exception:
                 log.exception("не удалось синхронизировать мод %s в %s", name, target)
-                all_ok = False
-            if dst.exists():
-                keep.add(name)
+                downloads.append((name, m))  # локально не вышло — попробуем по сети
             done += 1
+            if on_progress:
+                on_progress(done / total)
+
+        byte_lock = threading.Lock()
+
+        def _on_bytes_safe(n):
+            if on_bytes:
+                with byte_lock:
+                    on_bytes(n)
+
+        def _download_one(item):
+            name, m = item
+            dst = target / name
+            sha = m["sha256"]
+            size = int(m.get("size", 0))
+            url = f"{_base(host, port)}/mods/{urllib.parse.quote(name)}"
+            try:
+                tmp = _download_resumable(url, sha, size, dst, on_bytes=_on_bytes_safe)
+                os.replace(tmp, dst)
+                _cleanup_part(dst)
+                good[sha] = dst
+                keep.add(name)
+                log.info("скачан мод %s -> %s", name, target)
+                return True
+            except Exception:
+                log.exception("не удалось синхронизировать мод %s в %s", name, target)
+                if dst.exists():  # не потеряем управление над недокачанным файлом
+                    keep.add(name)
+                return False
+
+        if downloads:
+            workers = min(DOWNLOAD_WORKERS, len(downloads))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="botyaraMC-dl") as pool:
+                results = list(pool.map(_download_one, downloads))
+            all_ok = all_ok and all(results)
+            done += len(downloads)
             if on_progress:
                 on_progress(done / total)
 
@@ -834,6 +1020,7 @@ def sync_all(host, port, manifest, mc_dir, is_host=False, server_mods_dir="",
         on_bytes=_on_bytes,
         mc_version=manifest.get("mc_version", "1.20.1"),
     )
+    flush_hash_cache()
     if on_progress:
         on_progress(1.0)
     return ok_mods and ok_rp

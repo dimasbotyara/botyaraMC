@@ -100,6 +100,20 @@ def _should_hide(real_name, hide_mode, hide_list):
     return real_name.lower() in low
 
 
+def _files_to_hash(files, cache):
+    """Выбирает файлы, чей (mtime_ns, size) изменился с прошлого скана, и снимает stat."""
+    entries = []
+    for p in files:
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        key = (st.st_mtime_ns, st.st_size)
+        if cache.get(p.name) is None or cache[p.name][0] != key:
+            entries.append((p.name, key))
+    return entries
+
+
 def scan_mods(cfg=None):
     """Список {'name','sha256','size'} для всех .jar в mods/ (с учётом hide_mods)."""
     if cfg is None:
@@ -108,56 +122,69 @@ def scan_mods(cfg=None):
     hide_list = cfg.get("hide_mods_list") or []
     salt = C.get_hide_salt()
 
-    result, seen, new_map, used_names = [], set(), {}, set()
+    # Фаза 1 (под локом): снимок каталога + алиасы. SHA-256 считаем ПОСЛЕ,
+    # чтобы хэширование сотен мегабайт не блокировало параллельные запросы.
     with _lock:
         MODS_DIR.mkdir(exist_ok=True)
         files = [p for p in sorted(MODS_DIR.glob("*.jar"))
-                 if not p.name.startswith(".") and p.is_file()]
+                 if not p.name.startswith(".") and p.is_file() and not p.is_symlink()]
         # Сначала резервируем имена открытых модов, чтобы алиасы с ними не совпали
-        for p in files:
-            if not _should_hide(p.name, hide_mode, hide_list):
-                used_names.add(p.name.lower())
+        used_names = {
+            p.name.lower() for p in files if not _should_hide(p.name, hide_mode, hide_list)
+        }
 
         # Стабильные алиасы: восстанавливаем сохранённые; новые генерим только для новых модов.
         alias_map = _load_alias_map()
-        alias_dirty = False
         assigned = {}  # real_name -> alias
         for p in files:
             if _should_hide(p.name, hide_mode, hide_list):
                 saved = alias_map.get(f"{hide_mode}:{p.name}")
-                if saved and saved.lower() not in used_names and saved.lower() not in {v.lower() for v in assigned.values()}:
+                assigned_lower = {v.lower() for v in assigned.values()}
+                if saved and saved.lower() not in used_names and saved.lower() not in assigned_lower:
                     assigned[p.name] = saved
                     used_names.add(saved.lower())
+        for p in files:
+            if _should_hide(p.name, hide_mode, hide_list) and p.name not in assigned:
+                assigned[p.name] = _make_alias(p.name, hide_mode, salt, used_names)
+        todo = _files_to_hash(files, _cache)
 
+    # Фаза 2 (без лока): хэшируем только изменившиеся файлы
+    hashed = {}
+    for name, key in todo:
+        p = MODS_DIR / name
+        try:
+            hashed[name] = (key, _sha256(p))
+        except OSError:
+            continue
+
+    # Фаза 3 (под локом): публикуем кэши и результат
+    result, seen, new_map = [], set(), {}
+    with _lock:
         for p in files:
             try:
                 st = p.stat()
                 key = (st.st_mtime_ns, st.st_size)
-                cached = _cache.get(p.name)
-                if not cached or cached[0] != key:
-                    cached = (key, _sha256(p))
-                    _cache[p.name] = cached
-                if _should_hide(p.name, hide_mode, hide_list):
-                    pub_name = assigned.get(p.name)
-                    if not pub_name:
-                        pub_name = _make_alias(p.name, hide_mode, salt, used_names)
-                        assigned[p.name] = pub_name
-                    if alias_map.get(f"{hide_mode}:{p.name}") != pub_name:
-                        alias_map[f"{hide_mode}:{p.name}"] = pub_name
-                        alias_dirty = True
-                else:
-                    pub_name = p.name
-                new_map[pub_name] = p
-                result.append({"name": pub_name, "sha256": cached[1], "size": st.st_size})
-                seen.add(p.name)
             except OSError:
                 continue
+            cached = hashed.get(p.name) or _cache.get(p.name)
+            if not cached or cached[0] != key:
+                continue  # файл меняется прямо сейчас — подхватим на следующем скане
+            _cache[p.name] = cached
+            pub_name = assigned.get(p.name, p.name)
+            new_map[pub_name] = p
+            result.append({"name": pub_name, "sha256": cached[1], "size": st.st_size})
+            seen.add(p.name)
 
-        # Чистим карту от удалённых модов и сохраняем, если что-то изменилось
+        # Чистим карту алиасов от удалённых модов и сохраняем, если что-то изменилось
+        alias_dirty = False
         live_keys = {f"{hide_mode}:{pn}" for pn in seen}
         for k in list(alias_map):
             if k.split(":", 1)[0] == hide_mode and k not in live_keys:
                 del alias_map[k]
+                alias_dirty = True
+        for real_name, pub_name in assigned.items():
+            if alias_map.get(f"{hide_mode}:{real_name}") != pub_name:
+                alias_map[f"{hide_mode}:{real_name}"] = pub_name
                 alias_dirty = True
         if alias_dirty:
             _save_alias_map(alias_map)
@@ -175,43 +202,57 @@ def scan_mods(cfg=None):
 def scan_real_mods():
     """Реальные имена модов на диске для логов консоли хоста."""
     MODS_DIR.mkdir(exist_ok=True)
+    with _lock:
+        files = [p for p in sorted(MODS_DIR.glob("*.jar"))
+                 if not p.name.startswith(".") and p.is_file() and not p.is_symlink()]
+        todo = _files_to_hash(files, _cache)
+    hashed = {}
+    for name, key in todo:
+        try:
+            hashed[name] = (key, _sha256(MODS_DIR / name))
+        except OSError:
+            continue
     out = {}
     with _lock:
-        for p in sorted(MODS_DIR.glob("*.jar")):
-            if p.name.startswith(".") or not p.is_file():
-                continue
+        for p in files:
+            cached = hashed.get(p.name) or _cache.get(p.name)
             try:
                 st = p.stat()
                 key = (st.st_mtime_ns, st.st_size)
-                cached = _cache.get(p.name)
-                if not cached or cached[0] != key:
-                    cached = (key, _sha256(p))
-                    _cache[p.name] = cached
-                out[p.name] = cached[1]
             except OSError:
                 continue
+            if cached and cached[0] == key:
+                _cache[p.name] = cached
+                out[p.name] = cached[1]
     return out
 
 
 def scan_resourcepacks():
     """Список {'name','sha256','size'} для всех .zip в папке resourcepacks/."""
+    RESOURCEPACKS_DIR.mkdir(exist_ok=True)
+    with _lock:
+        files = [p for p in sorted(RESOURCEPACKS_DIR.glob("*.zip"))
+                 if not p.name.startswith(".") and p.is_file() and not p.is_symlink()]
+        todo = _files_to_hash(files, _rp_cache)
+    hashed = {}
+    for name, key in todo:
+        try:
+            hashed[name] = (key, _sha256(RESOURCEPACKS_DIR / name))
+        except OSError:
+            continue
     result, seen = [], set()
     with _lock:
-        RESOURCEPACKS_DIR.mkdir(exist_ok=True)
-        for p in sorted(RESOURCEPACKS_DIR.glob("*.zip")):
-            if p.name.startswith(".") or not p.is_file():
-                continue
+        for p in files:
+            cached = hashed.get(p.name) or _rp_cache.get(p.name)
             try:
                 st = p.stat()
                 key = (st.st_mtime_ns, st.st_size)
-                cached = _rp_cache.get(p.name)
-                if not cached or cached[0] != key:
-                    cached = (key, _sha256(p))
-                    _rp_cache[p.name] = cached
-                result.append({"name": p.name, "sha256": cached[1], "size": st.st_size})
-                seen.add(p.name)
             except OSError:
                 continue
+            if cached and cached[0] == key:
+                _rp_cache[p.name] = cached
+                result.append({"name": p.name, "sha256": cached[1], "size": st.st_size})
+                seen.add(p.name)
         for name in list(_rp_cache):
             if name not in seen:
                 del _rp_cache[name]
@@ -276,6 +317,4 @@ def scan_background(cfg=None):
             return None
 
 
-# Обратная совместимость со старыми вызовами
-scan = scan_mods
-resolve = resolve_mod
+# Обратной совместимости больше нет: все вызовы идут по полным именам scan_mods / resolve_mod

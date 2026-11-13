@@ -1,5 +1,6 @@
 """CLI-режим (без GUI): python main.py --play --nick Steve ... (для скриптов и systemd)."""
 import argparse
+import ipaddress
 import logging
 import re
 import signal
@@ -28,13 +29,31 @@ def parse_hostport(text):
     if not t or " " in t or "/" in t or "\\" in t:
         return None
     host, port = t, DEFAULT_PORT
-    if ":" in t:
-        host, _, p = t.rpartition(":")
-        if not p.isdigit() or not 0 < int(p) < 65536:
+    if t.startswith("["):  # [::1]:25456 — скобочный IPv6
+        close = t.find("]")
+        if close == -1:
             return None
+        host, rest = t[:close + 1], t[close + 1:]
+        if rest.startswith(":"):
+            if not rest[1:].isdigit() or not 0 < int(rest[1:]) < 65536:
+                return None
+            port = int(rest[1:])
+        elif rest:
+            return None
+    elif ":" in t:
+        host, _, p = t.rpartition(":")
+        if not p.isdigit() or not 0 < int(p) < 65536 or ":" in host:
+            return None  # bare IPv6 вида 26::1 не должен склеиваться в host:port
         port = int(p)
     if not host:
         return None
+    if ":" in host:  # IPv6 (в скобках): сохраняем их — они нужны в http://URL
+        inner = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+        try:
+            ipaddress.IPv6Address(inner)
+        except ValueError:
+            return None
+        return host, port
     # Если ввод состоит только из цифр и точек — требуем полный корректный IPv4 (4 октета 0..255)
     if re.fullmatch(r"[0-9.]+", host):
         parts = host.split(".")
@@ -142,6 +161,11 @@ def run_cli(args):
             print(f"{prefix} {err_nick} (--nick Steve)", file=sys.stderr)
             return 1
 
+    if args.sync_only and args.play:
+        print("Error: --sync-only and --play are mutually exclusive." if en
+              else "Ошибка: --sync-only и --play нельзя использовать вместе.", file=sys.stderr)
+        return 1
+
     if args.server:
         parsed = parse_hostport(args.server)
         if not parsed:
@@ -149,10 +173,17 @@ def run_cli(args):
             print(msg, file=sys.stderr)
             return 1
         cfgmod.add_or_select_server(cfg, parsed[0], parsed[1])
+        # Сохраняем id сервера сразу: без этого кэш манифеста при следующем
+        # запуске оказывался у несуществующего id и офлайн-режим ломался.
+        cfgmod.save(cfg)
 
     if args.ram is not None:
         cfg["auto_ram"] = False
-        cfg["ram_mb"] = max(1024, int(args.ram))
+        ram_cap = cfgmod.max_selectable_ram_mb()
+        cfg["ram_mb"] = max(1024, min(int(args.ram), ram_cap))
+        if int(args.ram) > ram_cap:
+            _status(f"RAM capped to {ram_cap} MB (system limit)." if en
+                    else f"RAM ограничена до {ram_cap} МБ (лимит системы).")
     elif args.auto_ram:
         cfg["auto_ram"] = True
 
@@ -179,11 +210,14 @@ def run_cli(args):
         cfg["launch_timeout"] = max(0, int(args.timeout))
 
     host, port = cfg.get("sync_host", ""), cfg.get("sync_port", DEFAULT_PORT)
+    srv_id = cfg.get("active_server_id") or None
+    cached = cfgmod.load_cache(server_id=srv_id)
     manifest = None
     if host:
         try:
             _status(f"Connecting to sync server {host}:{port}…" if en else f"Подключаемся к sync-серверу {host}:{port}…")
-            manifest = sync.fetch_manifest(host, port)
+            manifest = sync.fetch_manifest(
+                host, port, cached=cached, cached_etag=(cached or {}).get("_etag"))
         except Exception as e:
             log.warning("sync-сервер %s:%s не ответил: %s", host, port, e)
 
@@ -194,14 +228,16 @@ def run_cli(args):
         if matched:
             fh, fp, _fname, _entry = matched
             try:
-                manifest = sync.fetch_manifest(fh, fp)
+                manifest = sync.fetch_manifest(
+                    fh, fp, cached=cached, cached_etag=(cached or {}).get("_etag"))
                 host, port = fh, fp
                 _status(f"Found server {host}:{port}" if en else f"Найден сервер {host}:{port}")
+                # Запоминаем найденный адрес, чтобы он не «слетал» между запусками
+                cfgmod.save(cfg)
             except Exception:
                 log.exception("найденный сервер не отдал манифест")
 
     live = manifest is not None
-    srv_id = cfg.get("active_server_id") or None
     if live:
         cfgmod.save_cache(manifest, server_id=srv_id)
     else:

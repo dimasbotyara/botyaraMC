@@ -7,6 +7,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 APP = "botyaraMC"
@@ -33,7 +34,7 @@ LOADER_TITLES = {
 def config_dir(create=True):
     env_override = os.environ.get("BOTYARAMC_CONFIG_DIR")
     if env_override:
-        d = Path(env_override)
+        d = Path(env_override).expanduser()
     elif sys.platform.startswith("win"):
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
         d = base / APP
@@ -88,6 +89,8 @@ def sanitize_client_folder(raw):
         return ""
     if ".." in s or "/" in s or "\\" in s:
         return ""
+    if s.endswith(".") or s.split(".")[0].lower() in _WIN_RESERVED:
+        return ""  # "con", "nul", "abc." — Windows такое не даст создать
     return s if _FOLDER_SAFE_RE.fullmatch(s) else ""
 
 
@@ -222,10 +225,15 @@ def find_relocated_server_folder(mc_dir, server_id, sync_host="", sync_port=2545
                 continue
             for sub in subdirs:
                 marker = read_folder_marker(sub)
+                if not marker:
+                    continue
+                try:
+                    marker_port = int(marker.get("sync_port", 25456))
+                except (TypeError, ValueError):
+                    continue  # маркер правили вручную — не падаем на поиске папки
                 if (
-                    marker
-                    and str(marker.get("sync_host", "")).lower() == str(sync_host).lower()
-                    and int(marker.get("sync_port", 25456)) == int(sync_port or 25456)
+                    str(marker.get("sync_host", "")).lower() == str(sync_host).lower()
+                    and marker_port == int(sync_port or 25456)
                 ):
                     return sub
     return None
@@ -330,7 +338,11 @@ def rename_server_folder(cfg, mc_dir, new_folder_name, server_id=None, manifest=
     if not same_dir and new_dir.exists():
         marker = read_folder_marker(new_dir)
         sids = (marker or {}).get("server_ids") or []
-        if sid not in sids and any(new_dir.iterdir()):
+        try:
+            non_empty = any(new_dir.iterdir())
+        except OSError:
+            non_empty = True
+        if sid not in sids and non_empty:
             return False, "already_exists"
 
     # Проверяем, не использует ли старую папку другой сохранённый сервер
@@ -441,11 +453,23 @@ def _read(name, default):
         return default
 
 
+# UI пишет конфиг из главного потока, worker-треды — из фоновых: без лока и уникальных
+# tmp-имён два параллельных os.replace могут оставить config.json наполовину чужим.
+_write_lock = threading.Lock()
+
+
 def _write(name, data):
-    path = config_dir(create=True) / name
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-    os.replace(tmp, path)
+    with _write_lock:
+        path = config_dir(create=True) / name
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+            os.replace(tmp, path)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 # ------------------------------------------------------------ хост-папки и валидация уникальности
@@ -834,9 +858,9 @@ def load_cache(server_id=None, host="", port=25456):
     """Читает кэш строго для указанного server_id (без утечки кэша от другого сервера!)."""
     fname = _cache_filename(host, port, server_id=server_id)
     data = _read(fname, None)
-    if isinstance(data, dict) and "mc_version" in data:
+    if isinstance(data, dict) and "mc_version" in data and "loader" in data:
         return data
     if server_id:
         return None
     data = _read("manifest_cache.json", None)
-    return data if isinstance(data, dict) and "mc_version" in data else None
+    return data if isinstance(data, dict) and "mc_version" in data and "loader" in data else None

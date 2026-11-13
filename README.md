@@ -64,7 +64,9 @@ No more sending 500 MB `.zip` archives over Discord or Telegram every time you a
 
 ### 📦 Smart Sync, Multi-Server & Mod Cloaking
 - **Upfront Download Size Preview** — Before launching, the Play button displays the exact remaining download size (e.g. `▶ PLAY • Download 45 MB`) along with live MB progress.
-- **Resumable Downloads (`HTTP Range`) & Per-IP Rate Limiting** — Interrupted transfers keep their `.part` state and resume from the exact byte via `206 Partial Content`, verified end-to-end with `SHA-256`. A sliding-window per-IP rate limiter (`rate_limit_per_min`, default `300/min`) protects the server and pairs with automatic `Retry-After` handling on the client.
+- **Resumable Downloads (`HTTP Range`) & Per-IP Rate Limiting** — Interrupted transfers keep their `.part` state and resume from the exact byte via `206 Partial Content` (suffix ranges `bytes=-N` and safe `If-Range` resume across file changes are supported too), verified end-to-end with `SHA-256`. A sliding-window per-IP rate limiter (`rate_limit_per_min`, default `300/min`) protects the server and pairs with automatic `Retry-After` handling on the client.
+- **Parallel Downloads (6 streams)** — Mods are downloaded concurrently over a thread pool; the server speaks `HTTP/1.1` with keep-alive and answers `304 Not Modified` via `ETag`, so manifest checks and re-syncs cost almost no traffic. A single corrupted download is retried automatically instead of failing the whole sync.
+- **Cross-Launch SHA Cache** — Verified file hashes are persisted (`hash_cache.json` in the config folder), so the next launch hashes nothing unless a file actually changed — "all up to date" becomes a near-instant stat pass even for hundreds of mods.
 - **Multi-Server Profiles** — Add as many servers as you like in `⚙ Settings` (by IP, domain, or LAN auto-discovery) and switch between them in a single click right from the main screen.
 - **Smart UDP Discovery** — When a server's IP changes, the launcher gracefully updates the selected server's address in place, never "hijacking" to a different server when multiple exist.
 - **Isolated Instance Folders (`client_folder`)** — Hosts can configure a custom client folder name so the modpack lives cleanly inside `.minecraft/home/` with your chosen isolation mode (`family` → `Fabric-1.16`, `version` → `Fabric 1.16.5`), while sharing `versions/`, `libraries/`, `assets/`, and `runtime/` from base `.minecraft` without duplicating gigabytes on disk.
@@ -151,7 +153,7 @@ botyaraMC/
 │   ├── srv_config.py          # Server config (config.txt) + TUI utilities
 │   ├── tui.py                 # Interactive configurator (questionary)
 │   ├── discovery.py           # UDP server announcement in LAN/VPN
-│   └── requirements.txt       # aiohttp, psutil, questionary, Pillow
+│   └── requirements.txt       # questionary (для TUI)
 │
 ├── launcher/                  # Launcher (GUI + CLI)
 │   ├── main.py                # Entry point
@@ -169,7 +171,7 @@ botyaraMC/
 │   └── icon.ico / icon.png    # App icons
 │
 ├── tests/
-│   └── test_botyaramc.py      # Comprehensive tests (10 tests, cover everything)
+│   └── test_botyaramc.py      # Comprehensive tests (25+ tests: sync, Range/ETag, cloaking, CLI, crash parser, UI)
 │
 ├── assets/
 │   ├── banner.en.svg / .png   # English banner ("Smart Download")
@@ -257,7 +259,7 @@ python main.py --detect-java
 | `--detect-java` | Print all detected Java installations on the system and exit |
 | `--lang {ru,en}` | Output and crash diagnostics language (`en` or `ru`) |
 | `--nick NICK` | In-game nickname (`3–16` chars: `A-Za-z0-9_`) |
-| `--server HOST[:PORT]` | Sync server address (IP, domain, or IDN, e.g. `play.example.com:25456`) |
+| `--server HOST[:PORT]` | Sync server address (IP, domain, IDN or bracketed IPv6, e.g. `play.example.com:25456`) |
 | `--mc-dir PATH` | Path to base `.minecraft` directory |
 | `--isolation {none,family,version}` | Version folder isolation mode |
 | `--ram MB` | Fixed RAM allocation in MB (e.g. `6144`) |
@@ -329,7 +331,7 @@ All themes switch instantaneously live (both in the setup wizard and in `⚙ Set
 
 ## 🛠 Config & Log Locations + Building a Standalone `.exe`
 
-Launcher settings (`config.json`), managed mod state (`managed.json`), per-server manifest caches (`manifest_cache_<id>.json`), and logs (`launcher.log`, `game.log`, `game.prev.log`) are stored in the standard OS user config directory:
+Launcher settings (`config.json`), managed mod state (`managed.json`), the cross-launch SHA cache (`hash_cache.json`), per-server manifest caches (`manifest_cache_<id>.json`), and logs (`launcher.log` — auto-rotated, `game.log`, `game.prev.log`) are stored in the standard OS user config directory:
 
 - **Windows:** `%APPDATA%\botyaraMC`
 - **Linux:** `~/.config/botyaraMC`
@@ -358,7 +360,7 @@ The standalone executable will be generated at `launcher/dist/botyaraMC.exe` wit
 
 ## 🧪 Running Tests
 
-The automated test suite verifies the HTTP Range sync server, mid-stream disconnect recovery, per-IP rate limiting (`429` + `Retry-After`), mod cloaking (`words`, `hash`, selective), `old-mods/` migration and `mods/botyaraMC/` server-switch caching, `delete_user_mods`, add-only resourcepack sync, isolated `client_folder` instances, `auto_join`, TUI validators, Java detection, JVM presets, launch timeout watchdog, crash report parser, `mclo.gs` privacy scrubbing, time-of-day greetings, strict nickname validation, headless CLI, and all CustomTkinter UI views:
+The automated test suite verifies the HTTP Range sync server (including suffix ranges, `If-Range` and `ETag`/304 caching over `HTTP/1.1` keep-alive), mid-stream disconnect recovery, per-IP rate limiting (`429` + `Retry-After`), mod cloaking (`words`, `hash`, selective), `old-mods/` migration and `mods/botyaraMC/` server-switch caching, user-mod overwrite protection, parallel downloads, the cross-launch SHA cache, strict manifest validation, `delete_user_mods`, add-only resourcepack sync, isolated `client_folder` instances (including Windows-reserved folder names), server `config.txt` validation, `auto_join`, TUI validators, Java detection, JVM presets, launch timeout watchdog, crash report parser, `mclo.gs` privacy scrubbing and error handling, time-of-day greetings, strict nickname validation, headless CLI (IPv6 addresses included), concurrent config writes, and all CustomTkinter UI views:
 
 ```bash
 pip install -r launcher/requirements.txt -r server/requirements.txt pytest

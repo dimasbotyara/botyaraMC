@@ -1,8 +1,12 @@
 """botyaraMC sync-server. Запуск: python server.py | Настройка TUI: python tui.py"""
 import collections
+import hashlib
 import json
+import os
 import re
+import signal
 import socket
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,7 +16,13 @@ import discovery
 import mods_index as M
 import srv_config as C
 
-_RANGE_RE = re.compile(r"^bytes=(\d+)-(\d*)$")
+# start и end могут быть пустыми: bytes=500- (хвост), bytes=-500 (последние N байт).
+# Мультирейнджи (bytes=0-1,5-9) не матчатся и потому игнорируются (отдаём 200 целиком).
+_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+def _log_err(msg):
+    print(f"[!] {msg}", file=sys.stderr, flush=True)
 
 
 class RateLimiter:
@@ -53,11 +63,34 @@ class RateLimiter:
 rate_limiter = RateLimiter()
 
 
+def _etag_match(inm_header, etag):
+    """If-None-Match: '*' или список тегов (с опциональным префиксом W/)."""
+    inm = (inm_header or "").strip()
+    if not inm:
+        return False
+    if inm == "*":
+        return True
+    for tag in inm.split(","):
+        tag = tag.strip()
+        if tag.startswith("W/"):
+            tag = tag[2:]
+        if tag == etag:
+            return True
+    return False
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "botyaraMC-sync"
+    sys_version = ""            # не светим версию Python в заголовке Server
+    protocol_version = "HTTP/1.1"  # keep-alive: одно TCP-соединение на много запросов
+    timeout = 60                # «мертвые» соединения не держат потоки вечно
 
     def log_message(self, fmt, *args):  # тишина в консоли
         pass
+
+    def send_response(self, code, message=None):
+        self._resp_started = True
+        super().send_response(code, message)
 
     def _json(self, obj, code=200, head_only=False, extra_headers=None):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -71,66 +104,108 @@ class Handler(BaseHTTPRequestHandler):
         if not head_only:
             self.wfile.write(body)
 
+    def _json_cached(self, obj, head_only=False, extra_headers=None):
+        """JSON с ETag: повторный запрос с If-None-Match получает лёгкий 304 вместо тела."""
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        etag = f'"{hashlib.sha1(body).hexdigest()}"'
+        if _etag_match(self.headers.get("If-None-Match"), etag):
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.end_headers()
+            return
+        self._json(obj, head_only=head_only, extra_headers={**(extra_headers or {}), "ETag": etag})
+
+    def _send_416(self, total):
+        self.send_response(416)
+        self.send_header("Content-Range", f"bytes */{total}")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _serve_file(self, path, content_type, head_only=False):
+        """Раздача файла: Range/206 + суффиксные байты, ETag/If-Range, 304 и защита от усечения."""
         try:
-            total = path.stat().st_size
+            f = open(path, "rb")
         except OSError:
             self._json({"error": "not found"}, 404, head_only=head_only)
             return
 
-        range_hdr = (self.headers.get("Range") or "").strip()
-        start, end, status = 0, max(0, total - 1), 200
+        with f:
+            st = os.fstat(f.fileno())
+            total = st.st_size
+            etag = f'"{total:x}-{st.st_mtime_ns:x}"'
 
-        if range_hdr and total > 0:
-            m = _RANGE_RE.match(range_hdr)
-            if not m:
-                self.send_response(416)
-                self.send_header("Content-Range", f"bytes */{total}")
-                self.send_header("Content-Length", "0")
+            if _etag_match(self.headers.get("If-None-Match"), etag):
+                self.send_response(304)
+                self.send_header("ETag", etag)
                 self.end_headers()
                 return
-            start = int(m.group(1))
-            end = min(int(m.group(2)), total - 1) if m.group(2) else total - 1
-            if start >= total or start > end:
-                self.send_response(416)
-                self.send_header("Content-Range", f"bytes */{total}")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            status = 206
-        elif range_hdr and total == 0:
-            self.send_response(416)
-            self.send_header("Content-Range", "bytes */0")
-            self.send_header("Content-Length", "0")
+
+            range_hdr = (self.headers.get("Range") or "").strip()
+            start, end, status, partial = 0, max(0, total - 1), 200, False
+
+            if range_hdr:
+                # If-Range не совпал -> файл менялся, безопаснее отдать целиком (200)
+                if_range = (self.headers.get("If-Range") or "").strip()
+                if if_range and if_range != etag:
+                    range_hdr = ""
+            if range_hdr:
+                if total == 0:
+                    self._send_416(0)
+                    return
+                m = _RANGE_RE.match(range_hdr)
+                if not m or (not m.group(1) and not m.group(2)):
+                    # мульти-рейндж и синтаксический мусор: по RFC 7233 игнорируем -> 200
+                    range_hdr = ""
+                elif not m.group(1):  # суффиксный рейндж bytes=-N (последние N байт)
+                    suffix = int(m.group(2))
+                    if suffix <= 0:
+                        self._send_416(total)
+                        return
+                    start, end, partial = max(0, total - suffix), total - 1, True
+                else:
+                    start = int(m.group(1))
+                    if start >= total:
+                        self._send_416(total)
+                        return
+                    end = min(int(m.group(2)), total - 1) if m.group(2) else total - 1
+                    if start > end:  # синтаксически неверный рейндж -> игнорируем (RFC 7233)
+                        start, end, partial = 0, total - 1, False
+                    else:
+                        partial = True
+                status = 206 if partial else 200
+
+            length = (end - start + 1) if total > 0 else 0
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("ETag", etag)
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+            self.send_header("Content-Length", str(length))
             self.end_headers()
-            return
+            if head_only or length == 0:
+                return
 
-        length = (end - start + 1) if total > 0 else 0
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Accept-Ranges", "bytes")
-        if status == 206:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
-        self.send_header("Content-Length", str(length))
-        self.end_headers()
-        if head_only or length == 0:
-            return
-
-        remaining = length
-        with open(path, "rb") as f:
+            remaining = length
             if start:
                 f.seek(start)
             while remaining > 0:
                 chunk = f.read(min(1 << 16, remaining))
                 if not chunk:
+                    # Файл «съёжился» под нами (заменили на месте): обещанный Content-Length
+                    # уже не собрать — рвём соединение, чтобы клиент не посчитал ответ целым.
+                    self.close_connection = True
                     break
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
 
     def _handle(self, head_only=False):
         path = self.path.split("?", 1)[0]
+        self._resp_started = False
+        en = False
         try:
             cfg = C.load()
+            en = cfg.get("language") == "en"
             client_ip = self.client_address[0] if self.client_address else "unknown"
             if not rate_limiter.allow(client_ip, cfg.get("rate_limit_per_min", 300)):
                 self._json(
@@ -147,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
                     head_only=head_only,
                 )
             elif path == "/manifest":
-                self._json({
+                manifest = {
                     "app": "botyaraMC",
                     "server_name": cfg["server_name"],
                     "client_folder": cfg["client_folder"],
@@ -164,8 +239,9 @@ class Handler(BaseHTTPRequestHandler):
                     "mods": M.scan_mods(cfg),
                     "resourcepacks": M.scan_resourcepacks(),
                     "background": M.scan_background(cfg),
-                }, head_only=head_only)
-            elif path == "/background" or path.startswith("/background/"):
+                }
+                self._json_cached(manifest, head_only=head_only)
+            elif path == "/background":
                 p, mime = M.resolve_background(cfg)
                 if p is None:
                     self._json({"error": "not found"}, 404, head_only=head_only)
@@ -187,6 +263,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "not found"}, 404, head_only=head_only)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        except Exception as e:
+            # Файл пропал/перезаписался прямо во время запроса, диск недоступен и т.п.:
+            # честный 500 вместо молча оборванного соединения + строчка в stderr для диагностики.
+            _log_err(f"request error on {path}: {e.__class__.__name__}: {e}")
+            if not getattr(self, "_resp_started", False):
+                try:
+                    self._json({"error": "internal server error"}, 500, head_only=head_only)
+                except OSError:
+                    pass
 
     def do_GET(self):
         self._handle(head_only=False)
@@ -226,8 +311,23 @@ def main():
             print("[i] Первый запуск: созданы config.txt, mods/ и resourcepacks/. Запусти `python tui.py` для настройки!")
 
     discovery.start(C.load)
-    httpd = ThreadingHTTPServer(("0.0.0.0", cfg["http_port"]), Handler)
+    try:
+        httpd = ThreadingHTTPServer(("0.0.0.0", cfg["http_port"]), Handler)
+    except OSError as e:
+        if en:
+            print(f"[!] Failed to bind HTTP port {cfg['http_port']}: {e}")
+        else:
+            print(f"[!] Не удалось занять HTTP-порт {cfg['http_port']}: {e}")
+        sys.exit(1)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def _sigterm(_signum, _frame):
+        raise KeyboardInterrupt  # аккуратный выход по systemctl stop / kill
+
+    try:
+        signal.signal(signal.SIGTERM, _sigterm)
+    except (ValueError, OSError):
+        pass  # signal доступен только в главном потоке
 
     java_str = f"Java {cfg['java_version']}" if cfg["java_version"] else "Java auto"
     rl = cfg["rate_limit_per_min"]
@@ -275,15 +375,22 @@ def main():
     try:
         while True:
             time.sleep(3)
-            en = C.load().get("language") == "en"
-            cur_mods = M.scan_real_mods()
-            cur_rp = {r["name"]: r["sha256"] for r in M.scan_resourcepacks()}
+            try:
+                en = C.load().get("language") == "en"
+                cur_mods = M.scan_real_mods()
+                cur_rp = {r["name"]: r["sha256"] for r in M.scan_resourcepacks()}
+            except Exception as e:
+                # Нет доступа к диску и т.п. — не роняем весь сервер из-за монитор-цикла
+                _log_err(f"monitor loop: {e.__class__.__name__}: {e}")
+                time.sleep(2)
+                continue
             _print_diff("мод", "mod", prev_mods, cur_mods, en=en)
             _print_diff("ресурспак", "resourcepack", prev_rp, cur_rp, en=en)
             prev_mods, prev_rp = cur_mods, cur_rp
     except KeyboardInterrupt:
         print("\nBye! 👋" if en else "\nПока! 👋")
         httpd.shutdown()
+        httpd.server_close()
 
 
 if __name__ == "__main__":

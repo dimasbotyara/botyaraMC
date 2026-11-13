@@ -1,17 +1,33 @@
 """botyaraMC - точка входа. GUI: python main.py | CLI: python main.py --play --nick Steve"""
 import logging
+import logging.handlers
 import sys
 
 import config
 
 
-def main():
+def _setup_logging():
+    """Ротация launcher.log (иначе растёт бесконечно) + безопасный фолбэк,
+    если папка конфигов недоступна для записи."""
+    try:
+        cfg_dir = config.config_dir()
+        handler = logging.handlers.RotatingFileHandler(
+            cfg_dir / "launcher.log",
+            maxBytes=2 * 1024 * 1024,  # 2 МБ достаточно для диагностики
+            backupCount=2,
+            encoding="utf-8",
+        )
+    except OSError:
+        handler = logging.StreamHandler(sys.stderr)
     logging.basicConfig(
-        filename=str(config.config_dir() / "launcher.log"),
+        handlers=[handler],
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        encoding="utf-8",
     )
+
+
+def main():
+    _setup_logging()
 
     if len(sys.argv) > 1:
         import cli
