@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 APP = "botyaraMC"
@@ -464,7 +465,17 @@ def _write(name, data):
         tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
-            os.replace(tmp, path)
+            for attempt in range(6):
+                try:
+                    os.replace(tmp, path)
+                    break
+                except PermissionError:
+                    # Windows: replace падает, пока параллельный читатель держит файл
+                    # открытым. Файл атомарный и валидный, читатель закроется сам —
+                    # короткий ретрай вместо падения сохранения настроек.
+                    if attempt == 5:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
         finally:
             try:
                 tmp.unlink()
