@@ -38,6 +38,11 @@ def main():
             print("botyaraMC: --lang applies to CLI mode; "
                   "for headless use add --play / --sync-only / --detect-java. Opening GUI…")
 
+    # Встроенные шрифты (Inter / JetBrains Mono) — строго до создания Tk,
+    # чтобы fontconfig на Linux увидел их при первой инициализации.
+    import fonts
+    fonts.ensure_loaded()
+
     from ui import App
     App().mainloop()
 

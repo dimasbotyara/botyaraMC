@@ -1242,3 +1242,36 @@ def test_unsupported_loader_fails_loudly(isolated_env):
     # optifine/мусорные загрузчики честно падают, а не ставят молча ваниллу
     with pytest.raises(RuntimeError):
         mc.ensure_version(isolated_env["mc_dir"], "1.20.1", "optifine")
+
+
+# ------------------------------------------------------------------
+# 18: Встроенные шрифты (Inter / JetBrains Mono) — файлы, лицензии, загрузчик
+# ------------------------------------------------------------------
+def test_bundled_fonts_files_licenses_and_loader(isolated_env, tmp_path):
+    import fonts
+
+    assert fonts.FONTS_DIR.is_dir()
+    for name in fonts.FONT_FILES:
+        p = fonts.FONTS_DIR / name
+        assert p.is_file() and p.stat().st_size > 50_000
+        assert p.read_bytes()[:4] == b"\x00\x01\x00\x00"  # валидный TTF
+
+    for lic in ("OFL-Inter.txt", "OFL-JetBrainsMono.txt"):
+        text = (fonts.FONTS_DIR / lic).read_text(encoding="utf-8", errors="ignore")
+        assert "Open Font License" in text
+
+    # Загрузчик: не падает и помечает себя загруженным (фолбэк на системные шрифты безопасен)
+    assert fonts.ensure_loaded() is True
+    assert fonts.ensure_loaded() is True  # идемпотентно
+
+    # Linux-установка во временную директорию: файлы копируются 1:1
+    dst_root = tmp_path / "userfonts"
+    fonts._install_linux([fonts.FONTS_DIR / n for n in fonts.FONT_FILES], target_dir=dst_root / "fonts" / "botyaraMC")
+    for name in fonts.FONT_FILES:
+        copied = dst_root / "fonts" / "botyaraMC" / name
+        assert copied.is_file()
+        assert copied.stat().st_size == (fonts.FONTS_DIR / name).stat().st_size
+
+    # resolve_families вне Tk возвращает безопасные фолбэки
+    ui_fam, mono_fam = fonts.resolve_families(None)
+    assert ui_fam is None and mono_fam is None

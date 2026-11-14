@@ -103,6 +103,7 @@ Each folder gets a `botyaramc.json` marker — if you rename the folder in Explo
 - Work independently — enable both, one, or neither.
 
 ### 🖥️ Cozy Desktop UX & Crash Diagnostics
+- **Bundled Fonts (Inter + JetBrains Mono)** — the launcher ships its own OFL-licensed fonts with full Cyrillic support: **Inter** as a single UI font (same typography as the banner SVGs) and **JetBrains Mono** for logs & crash reports. Loaded without system-wide installation (process-private on Windows/macOS, user fonts folder on Linux); if anything fails, standard system fonts are used — the look never breaks.
 - **Time-of-Day Dynamic Greetings** — 240 warm, non-repetitive greetings tailored to morning, afternoon, evening, and night (English & Russian) that auto-rotate every 10 minutes while the launcher is open. Press **`R`** on the main screen to randomize instantly!
 - **Thoughtful UX Details**:
   - **5 instant live themes** recoloring every widget without restart;
@@ -167,7 +168,8 @@ botyaraMC/
 │   ├── crash.py               # Crash parser + mclo.gs upload
 │   ├── themes.py              # 5 live themes (Catppuccin Mocha/Latte, Gruvbox, Ayu, Monokai)
 │   ├── i18n.py                # RU/EN localization, time-of-day greetings, nickname validation
-│   ├── requirements.txt       # customtkinter, minecraft-launcher-lib, psutil, Pillow, pytest
+│   ├── fonts.py + fonts/      # Bundled Inter & JetBrains Mono (OFL 1.1) for a consistent look on any OS
+│   ├── requirements.txt       # customtkinter, minecraft-launcher-lib, Pillow, psutil
 │   └── icon.ico / icon.png    # App icons
 │
 ├── tests/
@@ -347,6 +349,7 @@ pip install -r requirements.txt pyinstaller
 pyinstaller --noconfirm --onefile --windowed --name botyaraMC ^
   --icon icon.ico ^
   --add-data "icon.ico;." ^
+  --add-data "fonts;fonts" ^
   --add-data "icon.png;." ^
   --collect-all customtkinter ^
   main.py

@@ -16,6 +16,7 @@ import customtkinter as ctk
 import config as cfgmod
 import crash
 import discovery
+import fonts
 import i18n
 import jvm
 import mc
@@ -66,6 +67,7 @@ class App(ctk.CTk):
         self.minsize(860, 620)
         self.configure(fg_color=self.theme["bg"])
         self._ico_path, self._icon_img = None, None
+        self._apply_fonts()
         self._apply_window_icon()
 
         self._reg = {}            # виджет -> {опция: ключ палитры}
@@ -124,6 +126,27 @@ class App(ctk.CTk):
                 break
 
     # ------------------------------------------------------------ темы
+    def _apply_fonts(self):
+        """Bundled Inter/JetBrains Mono (see fonts.py): if loaded — single interface font
+        and monospace for logs; otherwise system defaults like before."""
+        from tkinter import font as tkfont
+
+        ui_fam, mono_fam = fonts.resolve_families(self)
+        if ui_fam:
+            try:
+                # CTkFont() without explicit family reads the theme — the whole app gets Inter
+                ctk.ThemeManager.theme["CTkFont"]["family"] = ui_fam
+                for fname in ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont"):
+                    tkfont.nametofont(fname).configure(family=ui_fam)
+            except Exception:
+                log.debug("failed to apply UI font %s", ui_fam, exc_info=True)
+        if mono_fam:
+            try:
+                tkfont.nametofont("TkFixedFont").configure(family=mono_fam)
+            except Exception:
+                pass
+        self._mono_font = mono_fam or ("Consolas" if sys.platform.startswith("win") else "monospace")
+
     def T(self, w, **opts):
         """Регистрирует виджет: opts = {опция_ctk: ключ_палитры}. Перекрашивается вживую."""
         self._reg.setdefault(w, {}).update(opts)
@@ -1466,7 +1489,7 @@ class App(ctk.CTk):
         txt = ctk.CTkTextbox(
             card,
             corner_radius=10,
-            font=ctk.CTkFont(family="Consolas" if sys.platform.startswith("win") else "monospace", size=12),
+            font=ctk.CTkFont(family=self._mono_font, size=12),
             wrap="none",
         )
         self.T(txt, fg_color="bg", text_color="text", border_color="border",
